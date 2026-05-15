@@ -9,6 +9,14 @@ import os
 from datetime import datetime, timedelta
 from scipy import stats as scipy_stats
 from bs4 import BeautifulSoup
+from supabase import create_client, Client
+
+# ── SUPABASE CLIENT ───────────────────────────────────────────
+@st.cache_resource
+def get_supabase() -> Client:
+    url = st.secrets["SUPABASE_URL"]
+    key = st.secrets["SUPABASE_KEY"]
+    return create_client(url, key)
 
 st.set_page_config(page_title="AFL Fantasy DFS", page_icon="🏉", layout="wide")
 
@@ -128,9 +136,6 @@ NAME_CORRECTIONS = {
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-DATA_FILE   = 'player_stats.csv'
-ROSTER_FILE = 'player_roster.csv'
-
 DISPOSAL_LINES = list(range(10, 45, 5))
 KICK_LINES     = list(range(4,  28, 2))
 HANDBALL_LINES = list(range(4,  28, 2))
@@ -172,25 +177,80 @@ def build_afltables_url(player_name):
 
 # ── DATA LOADING ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def load_stats():
-    if os.path.exists(DATA_FILE):
-        df = pd.read_csv(DATA_FILE)
-        for col in STAT_COLS + ['fantasy_score', 'tog_pct']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-        return df
-    return pd.DataFrame()
+    sb = get_supabase()
+    all_rows = []
+    chunk = 1000
+    offset = 0
+    while True:
+        resp = sb.table('player_stats').select('*').range(offset, offset+chunk-1).execute()
+        if not resp.data: break
+        all_rows.extend(resp.data)
+        if len(resp.data) < chunk: break
+        offset += chunk
+    if not all_rows: return pd.DataFrame()
+    df = pd.DataFrame(all_rows)
+    for col in STAT_COLS + ['fantasy_score', 'tog_pct']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+    return df
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=300)
 def load_roster():
-    if os.path.exists(ROSTER_FILE):
-        return pd.read_csv(ROSTER_FILE)
-    return pd.DataFrame()
+    sb = get_supabase()
+    resp = sb.table('player_roster').select('*').execute()
+    if not resp.data: return pd.DataFrame()
+    return pd.DataFrame(resp.data)
 
-def save_stats(df):
-    df.to_csv(DATA_FILE, index=False)
+def save_stats_to_supabase(new_records):
+    sb = get_supabase()
+    if not new_records: return
+    # upsert to avoid duplicates
+    sb.table('player_stats').upsert(new_records, on_conflict='name,season,round,opponent').execute()
     st.cache_data.clear()
+
+def save_roster_to_supabase(df_roster):
+    sb = get_supabase()
+    records = df_roster.to_dict('records')
+    sb.table('player_roster').upsert(records, on_conflict='player_id').execute()
+    st.cache_data.clear()
+
+def load_saved_slates():
+    sb = get_supabase()
+    resp = sb.table('saved_slates').select('*').execute()
+    if not resp.data: return {}
+    result = {}
+    for row in resp.data:
+        try:
+            result[row['name']] = json.loads(row['data']) if isinstance(row['data'], str) else row['data']
+        except: pass
+    return result
+
+def save_slate_to_supabase(name, data):
+    sb = get_supabase()
+    # Convert DataFrames to JSON-serialisable dicts
+    serialisable = {}
+    for k, v in data.items():
+        if isinstance(v, pd.DataFrame):
+            serialisable[k] = v.to_dict('records')
+        elif isinstance(v, set):
+            serialisable[k] = list(v)
+        else:
+            serialisable[k] = v
+    sb.table('saved_slates').upsert({'name': name, 'data': json.dumps(serialisable)}, on_conflict='name').execute()
+
+def load_factor_weights():
+    sb = get_supabase()
+    resp = sb.table('factor_weights').select('*').eq('id', 1).execute()
+    if resp.data:
+        w = resp.data[0]['weights']
+        return json.loads(w) if isinstance(w, str) else w
+    return {}
+
+def save_factor_weights(weights):
+    sb = get_supabase()
+    sb.table('factor_weights').upsert({'id': 1, 'weights': json.dumps(weights)}).execute()
 
 # ── WEATHER ───────────────────────────────────────────────────
 
@@ -807,14 +867,22 @@ def main():
         st.markdown("### 🏉 AFL Fantasy DFS")
         page = st.radio("", ["📊 Projections","📋 Results","📈 Stat Lines","⚙️ Add Round Data","🏟️ Opponent Ratings"], label_visibility="collapsed")
 
+        # Load saved slates from Supabase
+        if 'saved_slates_loaded' not in st.session_state:
+            st.session_state.saved_slates = load_saved_slates()
+            st.session_state.saved_slates_loaded = True
+
         if st.session_state.saved_slates:
             st.markdown("---")
             st.markdown("**Saved slates**")
             for name in st.session_state.saved_slates:
                 if st.button(f"📂 {name}", key=f"load_{name}", use_container_width=True):
                     s = st.session_state.saved_slates[name]
-                    for k,v in s.items():
-                        st.session_state[k] = v
+                    for k, v in s.items():
+                        if isinstance(v, list) and k in ('df_proj','df_stat_proj','ds_players'):
+                            st.session_state[k] = pd.DataFrame(v)
+                        else:
+                            st.session_state[k] = v
                     st.rerun()
 
     # ── PROJECTIONS PAGE ──────────────────────────────────────
@@ -1007,7 +1075,7 @@ def main():
                 st.success(f"✅ {len(df_proj)} players projected")
 
         if save_btn and st.session_state.slate_name:
-            st.session_state.saved_slates[st.session_state.slate_name] = {
+            save_slate_to_supabase(st.session_state.slate_name, {
                 'df_proj':      st.session_state.df_proj,
                 'df_stat_proj': st.session_state.df_stat_proj,
                 'ds_players':   st.session_state.ds_players,
@@ -1015,7 +1083,7 @@ def main():
                 'weather_map':  st.session_state.weather_map,
                 'out_players':  st.session_state.out_players,
                 'round_label':  st.session_state.round_label,
-            }
+            })
             st.success(f"Slate '{st.session_state.slate_name}' saved!")
 
     # ── RESULTS PAGE ──────────────────────────────────────────
@@ -1170,11 +1238,11 @@ def main():
 
         df_roster = load_roster()
         if df_roster.empty:
-            st.warning("No player roster found. Upload player_roster.csv to the GitHub repo.")
+            st.warning("No player roster found.")
             uploaded_roster = st.file_uploader("Upload player_roster.csv", type="csv")
             if uploaded_roster:
                 df_roster = pd.read_csv(uploaded_roster)
-                df_roster.to_csv(ROSTER_FILE, index=False)
+                save_roster_to_supabase(df_roster)
                 st.success("Roster saved!")
                 st.rerun()
             return
@@ -1186,14 +1254,12 @@ def main():
             round_num = st.number_input("Round number (AFL Tables)", 1, 30, 1)
 
         if st.button("🔄 Start scrape", type="primary"):
-            df_stats = load_stats()
+            with st.spinner("Loading existing stats..."):
+                df_stats = load_stats()
             log_area = st.empty()
             log_lines = []
-
-            # Build venue lookup from a dummy fixture set (no fixture CSV in app)
             venue_lookup   = {}
             is_home_lookup = {}
-
             existing_keys = set()
             if not df_stats.empty:
                 for _, row in df_stats.iterrows():
@@ -1228,10 +1294,7 @@ def main():
                 log_area.code('\n'.join(log_lines[-20:]))
 
             if new_records:
-                df_new = pd.DataFrame(new_records)
-                df_stats = pd.concat([df_stats, df_new], ignore_index=True) if not df_stats.empty else df_new
-                df_stats = df_stats.drop_duplicates(subset=['name','season','round','opponent']).reset_index(drop=True)
-                save_stats(df_stats)
+                save_stats_to_supabase(new_records)
                 st.success(f"✅ Added {len(new_records)} records for Round {round_num} {season}")
             else:
                 st.warning("No new records found.")
