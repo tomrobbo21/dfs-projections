@@ -1003,19 +1003,44 @@ def main():
                     if st.button("✕", key=f"rem_tog_{player}"):
                         del st.session_state.tog_map[player]; st.rerun()
 
-        # Debutants
-        st.markdown("**Debutant base scores**")
-        deb_col1, deb_col2, deb_col3 = st.columns([2,1,1])
-        with deb_col1:
-            deb_name = st.text_input("Player name", key="deb_name")
-        with deb_col2:
-            deb_score = st.number_input("Base score", 0.0, 150.0, 40.0, key="deb_score")
-        with deb_col3:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button("Add debutant") and deb_name:
-                st.session_state.manual_scores[deb_name] = deb_score
-                st.rerun()
+# Debutants
+        st.markdown("**Debutant / no history players**")
+        if st.session_state.ds_players is not None and st.session_state.df_stats is not None:
+            known = set(st.session_state.df_stats['name'].unique())
+            unnamed = [
+                row['ds_name'] for _, row in st.session_state.ds_players.iterrows()
+                if row['ds_name'] not in known
+            ]
+            if unnamed:
+                st.warning(f"{len(unnamed)} players have no stats history — enter a base score for each:")
+                for p in unnamed:
+                    c1, c2 = st.columns([3,1])
+                    with c1:
+                        st.write(f"**{p}**")
+                    with c2:
+                        score = st.number_input("Base", 0.0, 150.0,
+                            float(st.session_state.manual_scores.get(p, 40.0)),
+                            5.0, key=f"deb_{p}")
+                        st.session_state.manual_scores[p] = score
+            else:
+                st.success("All named players have stats history.")
+
+        # Manual additions
+        with st.expander("Add player manually"):
+            deb_col1, deb_col2, deb_col3 = st.columns([2,1,1])
+            with deb_col1:
+                deb_name = st.text_input("Player name", key="deb_name")
+            with deb_col2:
+                deb_score = st.number_input("Base score", 0.0, 150.0, 40.0, key="deb_score")
+            with deb_col3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Add") and deb_name:
+                    st.session_state.manual_scores[deb_name] = deb_score
+                    st.rerun()
         for p, s in list(st.session_state.manual_scores.items()):
+            if st.session_state.ds_players is not None:
+                known = set(st.session_state.df_stats['name'].unique()) if st.session_state.df_stats is not None else set()
+                if p in known: continue
             c1, c2 = st.columns([3,1])
             with c1: st.write(f"{p}: {s}")
             with c2:
