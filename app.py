@@ -953,7 +953,7 @@ def main():
         cols = st.columns(4)
         for i, (k, label) in enumerate(zip(slider_keys, slider_labels)):
             with cols[i % 4]:
-                fw[k] = st.slider(label, 0.5, 1.5, 1.0, 0.05, key=f"fw_{k}")
+                fw[k] = st.slider(label, 0.2, 1.5, 1.0, 0.05, key=f"fw_{k}")
 
         # Overrides
         st.subheader("4. Player Overrides")
