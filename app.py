@@ -1262,8 +1262,27 @@ def main():
 
         if len(stat_row):
             r = stat_row.iloc[0]
+            # Last 10 games
             st.markdown("---")
-            st.markdown("**Stat projections**")
+            st.markdown("**Last 10 games**")
+            if st.session_state.df_stats is not None:
+                FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
+                def rsort(r):
+                    r = str(r).strip()
+                    if r in FINALS_ORDER: return FINALS_ORDER[r]
+                    try: return int(r)
+                    except: return 999
+                hist = st.session_state.df_stats[st.session_state.df_stats['name']==selected].copy()
+                hist['_rs'] = hist['round'].map(rsort)
+                hist = hist.sort_values(['season','_rs']).drop(columns='_rs').tail(10)
+                hist = hist[['season','round','opponent','venue','fantasy_score',
+                             'kicks','handballs','marks','tackles','hit_outs','tog_pct']].copy()
+                hist['tog_pct'] = (hist['tog_pct']*100).round(0).astype(int).astype(str)+'%'
+                hist = hist.rename(columns={
+                    'fantasy_score':'Score','kicks':'K','handballs':'HB',
+                    'marks':'M','tackles':'T','hit_outs':'HO','tog_pct':'TOG'
+                })
+                st.dataframe(hist.reset_index(drop=True), use_container_width=True, hide_index=True)
 
             stat_display = []
             for stat, prefix, label in [
@@ -1371,7 +1390,7 @@ def main():
     elif page == "🏟️ Opponent Ratings":
         st.header("Opponent Ratings")
 
-        df_stats = st.session_state.df_stats or load_stats()
+        df_stats = st.session_state.df_stats if st.session_state.df_stats is not None else load_stats()
         if df_stats is None or df_stats.empty:
             st.info("No stats loaded yet.")
             return
