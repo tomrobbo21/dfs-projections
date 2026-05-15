@@ -1047,16 +1047,26 @@ def main():
                 if st.button("✕", key=f"rem_deb_{p}"):
                     del st.session_state.manual_scores[p]; st.rerun()
 
-        # Role inflation
-        if st.session_state.out_players:
+# Role inflation
+        if st.session_state.out_players and st.session_state.df_stats is not None:
             st.subheader("5. Role Inflation")
-            st.write("Toggle ON for players who are confirmed out (their teammates get inflated)")
+            st.write("Toggle ON for confirmed outs averaging 80+ who will inflate teammates")
+            df_s = st.session_state.df_stats
+            significant = []
             for mp in st.session_state.out_players:
-                checked = mp['name'] in st.session_state.inflate_set
-                if st.checkbox(f"{mp['name']} ({mp['team']} · {mp['position']})", value=checked, key=f"inf_{mp['name']}"):
-                    st.session_state.inflate_set.add(mp['name'])
-                else:
-                    st.session_state.inflate_set.discard(mp['name'])
+                mp_data = df_s[df_s['name'] == mp['name']]
+                if len(mp_data) >= 3 and mp_data['fantasy_score'].mean() >= 80:
+                    significant.append(mp)
+            if significant:
+                for mp in significant:
+                    avg = round(df_s[df_s['name'] == mp['name']]['fantasy_score'].mean(), 1)
+                    checked = mp['name'] in st.session_state.inflate_set
+                    if st.checkbox(f"{mp['name']} ({mp['team']} · {mp['position']} · avg {avg})", value=checked, key=f"inf_{mp['name']}"):
+                        st.session_state.inflate_set.add(mp['name'])
+                    else:
+                        st.session_state.inflate_set.discard(mp['name'])
+            else:
+                st.info("No OUT players averaging 80+ this week.")
 
         # Run
         st.markdown("---")
