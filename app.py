@@ -906,17 +906,50 @@ def main():
         with col2:
             st.session_state.round_label = st.text_input("Round label", value=st.session_state.round_label)
 
-        # Upload CSV
-        st.subheader("1. Upload Draftstars CSV")
+# Load fixtures from Supabase
+        st.subheader("1. Select Round")
+        @st.cache_data(show_spinner=False, ttl=3600)
+        def load_fixtures():
+            sb = get_supabase()
+            resp = sb.table('fixtures').select('*').execute()
+            if not resp.data: return pd.DataFrame()
+            df = pd.DataFrame(resp.data)
+            df['home_team'] = df['Home Team'].map(lambda x: DS_TEAM_MAP.get(x, x))
+            df['away_team'] = df['Away Team'].map(lambda x: DS_TEAM_MAP.get(x, x))
+            df['venue']     = df['Location'].map(lambda x: FIXTURE_VENUE_MAP.get(x, x))
+            return df
+
+        df_fixtures = load_fixtures()
+        if not df_fixtures.empty:
+            seasons  = sorted(df_fixtures['file_year'].unique(), reverse=True)
+            sel_season = st.selectbox("Season", seasons, key="sel_season")
+            df_season = df_fixtures[df_fixtures['file_year'] == sel_season]
+            rounds = sorted(df_season['Round Number'].unique(),
+                           key=lambda r: int(r) if str(r).isdigit() else 999)
+            sel_round = st.selectbox("Round", rounds, key="sel_round")
+            df_round = df_season[df_season['Round Number'] == sel_round]
+            fixtures = []
+            for _, row in df_round.iterrows():
+                fixtures.append({
+                    'home_team': row['home_team'],
+                    'away_team': row['away_team'],
+                    'venue':     row['venue'],
+                })
+            st.session_state.fixtures = fixtures
+            games_str = ' · '.join([f"{f['home_team']} vs {f['away_team']}" for f in fixtures])
+            st.info(f"{len(fixtures)} games: {games_str}")
+        else:
+            st.warning("No fixtures loaded. Check Supabase fixtures table.")
+
+        # Upload Draftstars CSV
+        st.subheader("2. Upload Draftstars CSV")
         ds_file = st.file_uploader("Draftstars CSV", type="csv", label_visibility="collapsed")
         if ds_file:
             try:
                 players, out_players = parse_draftstars_csv(ds_file.read())
                 st.session_state.ds_players  = players
                 st.session_state.out_players = out_players
-                fixtures = extract_fixtures_from_ds(players)
-                st.session_state.fixtures = fixtures
-                st.success(f"✅ {len(players)} named players · {len(fixtures)} games · {len(out_players)} OUT")
+                st.success(f"✅ {len(players)} named players · {len(out_players)} OUT")
             except Exception as e:
                 st.error(f"Error parsing CSV: {e}")
 
