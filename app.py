@@ -1131,11 +1131,9 @@ def main():
                     ):
                         new_inflate_set.add(mp['name'])
                 st.session_state.inflate_set = new_inflate_set
-                st.write("DEBUG inflate_set:", st.session_state.inflate_set)
 
                 # Step 2 — sliders per checked out player
                 if st.session_state.inflate_set and st.session_state.ds_players is not None:
-                    st.write("DEBUG — entering Step 2")
                     st.markdown("**Step 2 — Set manual boost % for affected teammates**")
 
                     for mp_name in sorted(st.session_state.inflate_set):
