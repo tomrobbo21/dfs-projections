@@ -1255,6 +1255,8 @@ def main():
                 'manual_role_boosts': st.session_state.manual_role_boosts,
             })
             st.success(f"Slate '{st.session_state.slate_name}' saved!")
+            st.session_state.saved_slates = load_saved_slates()
+            st.rerun()
 
     # ══════════════════════════════════════════════════════════
     # RESULTS PAGE
