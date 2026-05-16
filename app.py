@@ -1150,7 +1150,7 @@ def main():
                         candidates = [
                             row for _, row in st.session_state.ds_players.iterrows()
                             if row['team'] == mp_team
-                            and row['position'].split('/')[0] == mp_pos
+                            and mp_pos in row['position'].split('/')
                         ]
 
                         if not candidates:
