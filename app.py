@@ -206,7 +206,6 @@ def load_roster():
 def save_stats_to_supabase(new_records):
     sb = get_supabase()
     if not new_records: return
-    # upsert to avoid duplicates
     sb.table('player_stats').upsert(new_records, on_conflict='name,season,round,opponent').execute()
     st.cache_data.clear()
 
@@ -229,7 +228,6 @@ def load_saved_slates():
 
 def save_slate_to_supabase(name, data):
     sb = get_supabase()
-    # Convert DataFrames to JSON-serialisable dicts
     serialisable = {}
     for k, v in data.items():
         if isinstance(v, pd.DataFrame):
@@ -320,7 +318,6 @@ def parse_draftstars_csv(file_bytes):
     players = players.rename(columns=rm)
     players['player_id'] = players['ds_name']
 
-    # Out players
     out_players = []
     if status_col and status_col in df.columns:
         active = df[
@@ -698,58 +695,6 @@ def build_opp_stat_ratings(df_stats):
     return ratings
 
 
-def calculate_role_inflation(df_stats, missing_players, named_players,
-                              confirmed_players, max_bump=0.15, other_pos_ratio=0.07):
-    if not missing_players or not confirmed_players: return {}
-    recent_seasons = sorted(df_stats['season'].unique())[-2:]
-    recent = df_stats[df_stats['season'].isin(recent_seasons)]
-    recent = recent[recent['tog_pct']>=0.45]
-
-    named_lookup = {
-        row['ds_name']:{'team':row['team'],'position':row['position'].split('/')[0]}
-        for _,row in named_players.iterrows()
-    }
-    POSITION_CONCENTRATION = {'RUC':0.75,'MID':0.60,'FWD':0.50,'DEF':0.55}
-    bumps = {n:0.0 for n in named_lookup}
-
-    for mp in missing_players:
-        if mp['name'] not in confirmed_players: continue
-        mp_name=mp['name']; mp_team=mp['team']; mp_pos=mp['position']
-        mp_data = recent[recent['name']==mp_name]
-        if len(mp_data)<3: continue
-        mp_avg = mp_data['fantasy_score'].mean()
-        if mp_avg<=0: continue
-
-        same_pos = [n for n,info in named_lookup.items()
-                    if info['team']==mp_team and info['position']==mp_pos]
-        other_pos= [n for n,info in named_lookup.items()
-                    if info['team']==mp_team and info['position']!=mp_pos]
-
-        same_total = sum(
-            recent[recent['name']==t]['fantasy_score'].mean()
-            for t in same_pos if len(recent[recent['name']==t])>0
-        )
-        total = mp_avg+same_total
-        if total<=0: continue
-        share  = mp_avg/total
-        adj_sh = share*POSITION_CONCENTRATION.get(mp_pos,0.60)
-
-        if same_pos:
-            avgs = {t: float(recent[recent['name']==t]['fantasy_score'].mean())
-                    for t in same_pos if len(recent[recent['name']==t])>0}
-            tot_avg = sum(avgs.values())
-            for t,av in avgs.items():
-                w = av/tot_avg if tot_avg>0 else 1/len(same_pos)
-                bumps[t] = bumps.get(t,0)+adj_sh*w
-
-        if other_pos:
-            per = (adj_sh*other_pos_ratio)/len(other_pos)
-            for t in other_pos:
-                bumps[t] = bumps.get(t,0)+per
-
-    return {p: round(1.0+min(b,max_bump),4) for p,b in bumps.items() if b>0}
-
-
 def run_projections(df_stats, ds_players, fixtures, weather_map,
                     injury_map, tog_map, factor_weights,
                     manual_base_scores, role_factors):
@@ -790,7 +735,7 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
 
-    # Apply role inflation
+    # Apply role factors (manual boosts from UI)
     df_proj['role_factor'] = df_proj['player'].map(role_factors).fillna(1.0)
     df_proj['projection']  = (df_proj['projection']*df_proj['role_factor']).round(1)
     df_proj['floor']       = (df_proj['floor']     *df_proj['role_factor']).round(1)
@@ -844,20 +789,21 @@ def main():
 
     # Session state init
     for key, default in [
-        ('df_stats',      None),
-        ('ds_players',    None),
-        ('out_players',   []),
-        ('fixtures',      []),
-        ('weather_map',   {}),
-        ('df_proj',       None),
-        ('df_stat_proj',  None),
-        ('injury_map',    {}),
-        ('tog_map',       {}),
-        ('manual_scores', {}),
-        ('inflate_set',   set()),
-        ('slate_name',    ''),
-        ('saved_slates',  {}),
-        ('round_label',   ''),
+        ('df_stats',           None),
+        ('ds_players',         None),
+        ('out_players',        []),
+        ('fixtures',           []),
+        ('weather_map',        {}),
+        ('df_proj',            None),
+        ('df_stat_proj',       None),
+        ('injury_map',         {}),
+        ('tog_map',            {}),
+        ('manual_scores',      {}),
+        ('inflate_set',        set()),
+        ('manual_role_boosts', {}),   # {player_name: multiplier}
+        ('slate_name',         ''),
+        ('saved_slates',       {}),
+        ('round_label',        ''),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -867,7 +813,6 @@ def main():
         st.markdown("### 🏉 AFL Fantasy DFS")
         page = st.radio("", ["📊 Projections","📋 Results","📈 Stat Lines","⚙️ Add Round Data","🏟️ Opponent Ratings"], label_visibility="collapsed")
 
-        # Load saved slates from Supabase
         if 'saved_slates_loaded' not in st.session_state:
             st.session_state.saved_slates = load_saved_slates()
             st.session_state.saved_slates_loaded = True
@@ -889,7 +834,6 @@ def main():
     if page == "📊 Projections":
         st.header("Generate Projections")
 
-        # Load stats
         if st.session_state.df_stats is None:
             df_stats = load_stats()
             if not df_stats.empty:
@@ -898,7 +842,6 @@ def main():
         if st.session_state.df_stats is None or st.session_state.df_stats.empty:
             st.warning("No player stats loaded. Go to **Add Round Data** to scrape stats first.")
 
-        # Slate name
         col1, col2 = st.columns([2,1])
         with col1:
             slate_name = st.text_input("Slate name (e.g. Friday R6, Saturday R6)", value=st.session_state.slate_name)
@@ -906,7 +849,7 @@ def main():
         with col2:
             st.session_state.round_label = st.text_input("Round label", value=st.session_state.round_label)
 
-# Load fixtures from Supabase
+        # ── SELECT ROUND ──────────────────────────────────────
         st.subheader("1. Select Round")
         @st.cache_data(show_spinner=False, ttl=3600)
         def load_fixtures():
@@ -921,14 +864,14 @@ def main():
 
         df_fixtures = load_fixtures()
         if not df_fixtures.empty:
-            seasons  = sorted(df_fixtures['file_year'].unique(), reverse=True)
+            seasons    = sorted(df_fixtures['file_year'].unique(), reverse=True)
             sel_season = st.selectbox("Season", seasons, key="sel_season")
-            df_season = df_fixtures[df_fixtures['file_year'] == sel_season]
-            rounds = sorted(df_season['Round Number'].unique(),
-                           key=lambda r: int(r) if str(r).isdigit() else 999)
-            sel_round = st.selectbox("Round", rounds, key="sel_round")
-            df_round = df_season[df_season['Round Number'] == sel_round]
-            fixtures = []
+            df_season  = df_fixtures[df_fixtures['file_year'] == sel_season]
+            rounds     = sorted(df_season['Round Number'].unique(),
+                                key=lambda r: int(r) if str(r).isdigit() else 999)
+            sel_round  = st.selectbox("Round", rounds, key="sel_round")
+            df_round   = df_season[df_season['Round Number'] == sel_round]
+            fixtures   = []
             for _, row in df_round.iterrows():
                 fixtures.append({
                     'home_team': row['home_team'],
@@ -941,7 +884,7 @@ def main():
         else:
             st.warning("No fixtures loaded. Check Supabase fixtures table.")
 
-        # Upload Draftstars CSV
+        # ── DRAFTSTARS CSV ────────────────────────────────────
         st.subheader("2. Upload Draftstars CSV")
         ds_file = st.file_uploader("Draftstars CSV", type="csv", label_visibility="collapsed")
         if ds_file:
@@ -949,27 +892,28 @@ def main():
                 players, out_players = parse_draftstars_csv(ds_file.read())
                 st.session_state.ds_players  = players
                 st.session_state.out_players = out_players
+                # Clear role boosts when a new CSV is uploaded — out list may have changed
+                st.session_state.inflate_set        = set()
+                st.session_state.manual_role_boosts = {}
                 st.success(f"✅ {len(players)} named players · {len(out_players)} OUT")
             except Exception as e:
                 st.error(f"Error parsing CSV: {e}")
 
-        # Weather
+        # ── WEATHER ───────────────────────────────────────────
         if st.session_state.fixtures:
-            st.subheader("2. Weather")
+            st.subheader("3. Weather")
             col1, col2 = st.columns([3,1])
             with col1:
                 if st.button("🌤️ Fetch weather automatically"):
                     with st.spinner("Fetching weather..."):
                         st.session_state.weather_map = fetch_all_venue_weather(st.session_state.fixtures)
-            with col2:
-                pass
-            wmap = {}
+            wmap   = {}
             venues = list({f['venue'] for f in st.session_state.fixtures})
-            cols = st.columns(min(len(venues), 3))
+            cols   = st.columns(min(len(venues), 3))
             for i, v in enumerate(venues):
                 with cols[i % 3]:
                     current = st.session_state.weather_map.get(v, 'fine')
-                    icons = {'fine':'☀️','light_rain':'🌦️','heavy_rain':'🌧️','wind':'💨'}
+                    icons   = {'fine':'☀️','light_rain':'🌦️','heavy_rain':'🌧️','wind':'💨'}
                     wmap[v] = st.selectbox(
                         f"{icons.get(current,'?')} {v}",
                         ['fine','light_rain','heavy_rain','wind'],
@@ -978,9 +922,9 @@ def main():
                     )
             st.session_state.weather_map = wmap
 
-        # Factor weights
-        st.subheader("3. Factor Weights")
-        slider_keys = ['form','trend','opponent','venue','home_away','weather','tog']
+        # ── FACTOR WEIGHTS ────────────────────────────────────
+        st.subheader("4. Factor Weights")
+        slider_keys   = ['form','trend','opponent','venue','home_away','weather','tog']
         slider_labels = ['Form (last 5)','Trend (20-game)','Opponent difficulty','Venue history','Home/Away','Weather','TOG']
         fw = {}
         cols = st.columns(4)
@@ -988,8 +932,8 @@ def main():
             with cols[i % 4]:
                 fw[k] = st.slider(label, 0.2, 1.5, 1.0, 0.05, key=f"fw_{k}")
 
-        # Overrides
-        st.subheader("4. Player Overrides")
+        # ── PLAYER OVERRIDES ──────────────────────────────────
+        st.subheader("5. Player Overrides")
         oc1, oc2 = st.columns(2)
 
         with oc1:
@@ -1036,10 +980,10 @@ def main():
                     if st.button("✕", key=f"rem_tog_{player}"):
                         del st.session_state.tog_map[player]; st.rerun()
 
-# Debutants
+        # ── DEBUTANTS ─────────────────────────────────────────
         st.markdown("**Debutant / no history players**")
         if st.session_state.ds_players is not None and st.session_state.df_stats is not None:
-            known = set(st.session_state.df_stats['name'].unique())
+            known   = set(st.session_state.df_stats['name'].unique())
             unnamed = [
                 row['ds_name'] for _, row in st.session_state.ds_players.iterrows()
                 if row['ds_name'] not in known
@@ -1058,7 +1002,6 @@ def main():
             else:
                 st.success("All named players have stats history.")
 
-        # Manual additions
         with st.expander("Add player manually"):
             deb_col1, deb_col2, deb_col3 = st.columns([2,1,1])
             with deb_col1:
@@ -1080,32 +1023,108 @@ def main():
                 if st.button("✕", key=f"rem_deb_{p}"):
                     del st.session_state.manual_scores[p]; st.rerun()
 
-# Role inflation
+        # ── ROLE INFLATION ────────────────────────────────────
         if st.session_state.out_players and st.session_state.df_stats is not None:
-            st.subheader("5. Role Inflation")
-            st.write("Toggle ON for confirmed outs averaging 80+ who will inflate teammates")
-            df_s = st.session_state.df_stats
+            st.subheader("6. Role Inflation")
+
+            df_s           = st.session_state.df_stats
+            recent_seasons = sorted(df_s['season'].unique())[-2:]
+            recent         = df_s[df_s['season'].isin(recent_seasons)]
+            recent         = recent[recent['tog_pct'] >= 0.45]
+
+            # Step 1: Check which outs to apply inflation for
+            st.markdown("**Step 1 — Select confirmed outs that will inflate teammates**")
             significant = []
             for mp in st.session_state.out_players:
                 mp_data = df_s[df_s['name'] == mp['name']]
                 if len(mp_data) >= 3 and mp_data['fantasy_score'].mean() >= 80:
                     significant.append(mp)
+
             if significant:
                 for mp in significant:
-                    avg = round(df_s[df_s['name'] == mp['name']]['fantasy_score'].mean(), 1)
+                    avg     = round(df_s[df_s['name'] == mp['name']]['fantasy_score'].mean(), 1)
                     checked = mp['name'] in st.session_state.inflate_set
-                    if st.checkbox(f"{mp['name']} ({mp['team']} · {mp['position']} · avg {avg})", value=checked, key=f"inf_{mp['name']}"):
+                    if st.checkbox(
+                        f"{mp['name']} ({mp['team']} · {mp['position']} · avg {avg})",
+                        value=checked,
+                        key=f"inf_{mp['name']}"
+                    ):
                         st.session_state.inflate_set.add(mp['name'])
                     else:
                         st.session_state.inflate_set.discard(mp['name'])
+                        # Clear any boosts associated with this player when unchecked
+                        if mp['name'] in [p for p in st.session_state.inflate_set]:
+                            pass
             else:
                 st.info("No OUT players averaging 80+ this week.")
 
-        # Run
+            # Step 2: Manual boost sliders — shown per confirmed out player
+            if st.session_state.inflate_set and st.session_state.ds_players is not None:
+                st.markdown("**Step 2 — Set manual boost % for affected teammates**")
+
+                for mp_name in sorted(st.session_state.inflate_set):
+                    mp = next((p for p in st.session_state.out_players if p['name'] == mp_name), None)
+                    if not mp:
+                        continue
+
+                    mp_team = mp['team']
+                    mp_pos  = mp['position']
+
+                    # Find same-team same-position players who are named in the slate
+                    candidates = [
+                        row for _, row in st.session_state.ds_players.iterrows()
+                        if row['team'] == mp_team
+                        and row['position'].split('/')[0] == mp_pos
+                    ]
+
+                    if not candidates:
+                        st.caption(f"No named {mp_pos}s from {mp_team} found in slate.")
+                        continue
+
+                    mp_avg = round(df_s[df_s['name'] == mp_name]['fantasy_score'].mean(), 1)
+                    st.markdown(f"_{mp_name} is OUT (avg {mp_avg}) — {mp_team} {mp_pos}s:_")
+
+                    cols = st.columns(min(len(candidates), 3))
+                    for i, row in enumerate(candidates):
+                        p     = row['ds_name']
+                        p_rec = recent[recent['name'] == p]
+                        p_avg = round(float(p_rec['fantasy_score'].mean()), 1) if len(p_rec) >= 3 else None
+                        label = f"{p}\n(avg {p_avg})" if p_avg else p
+
+                        # Current boost as integer %
+                        current_pct = round((st.session_state.manual_role_boosts.get(p, 1.0) - 1.0) * 100)
+
+                        with cols[i % 3]:
+                            boost_pct = st.slider(
+                                label,
+                                min_value=-10,
+                                max_value=40,
+                                value=int(current_pct),
+                                step=5,
+                                key=f"role_{mp_name}_{p}",
+                                help=f"% boost applied to {p}'s base projection"
+                            )
+                            st.session_state.manual_role_boosts[p] = round(1.0 + boost_pct / 100, 4)
+
+                # Summary of active boosts
+                active_boosts = {p: v for p, v in st.session_state.manual_role_boosts.items() if v != 1.0}
+                if active_boosts:
+                    st.markdown("**Active boosts:**")
+                    boost_rows = [
+                        {'Player': p, 'Boost': f"+{round((v-1)*100)}%" if v > 1 else f"{round((v-1)*100)}%"}
+                        for p, v in sorted(active_boosts.items())
+                    ]
+                    st.dataframe(pd.DataFrame(boost_rows), use_container_width=False, hide_index=True)
+
+                if st.button("🔄 Reset all role boosts"):
+                    st.session_state.manual_role_boosts = {}
+                    st.rerun()
+
+        # ── RUN / SAVE ────────────────────────────────────────
         st.markdown("---")
         col1, col2 = st.columns([2,1])
         with col1:
-            run_btn = st.button("🚀 Run Projections", type="primary", use_container_width=True)
+            run_btn  = st.button("🚀 Run Projections", type="primary", use_container_width=True)
         with col2:
             save_btn = st.button("💾 Save Slate", use_container_width=True)
 
@@ -1117,15 +1136,6 @@ def main():
             elif not st.session_state.fixtures:
                 st.error("No fixtures found. Check the Draftstars CSV.")
             else:
-                role_factors = {}
-                if st.session_state.inflate_set and st.session_state.ds_players is not None:
-                    role_factors = calculate_role_inflation(
-                        st.session_state.df_stats,
-                        st.session_state.out_players,
-                        st.session_state.ds_players,
-                        confirmed_players=st.session_state.inflate_set,
-                    )
-
                 with st.spinner("Running projections..."):
                     df_proj, df_stat = run_projections(
                         st.session_state.df_stats,
@@ -1136,7 +1146,7 @@ def main():
                         st.session_state.tog_map,
                         fw,
                         st.session_state.manual_scores,
-                        role_factors,
+                        st.session_state.manual_role_boosts,  # pass boosts directly
                     )
                 st.session_state.df_proj      = df_proj
                 st.session_state.df_stat_proj = df_stat
@@ -1144,13 +1154,14 @@ def main():
 
         if save_btn and st.session_state.slate_name:
             save_slate_to_supabase(st.session_state.slate_name, {
-                'df_proj':      st.session_state.df_proj,
-                'df_stat_proj': st.session_state.df_stat_proj,
-                'ds_players':   st.session_state.ds_players,
-                'fixtures':     st.session_state.fixtures,
-                'weather_map':  st.session_state.weather_map,
-                'out_players':  st.session_state.out_players,
-                'round_label':  st.session_state.round_label,
+                'df_proj':            st.session_state.df_proj,
+                'df_stat_proj':       st.session_state.df_stat_proj,
+                'ds_players':         st.session_state.ds_players,
+                'fixtures':           st.session_state.fixtures,
+                'weather_map':        st.session_state.weather_map,
+                'out_players':        st.session_state.out_players,
+                'round_label':        st.session_state.round_label,
+                'manual_role_boosts': st.session_state.manual_role_boosts,
             })
             st.success(f"Slate '{st.session_state.slate_name}' saved!")
 
@@ -1183,9 +1194,12 @@ def main():
         if 'salary' in df.columns:
             display_cols = ['player','team','position','opponent','salary','projection','floor','ceiling','confidence','value']
 
+        # Show role_factor column if any boosts were applied
+        if 'role_factor' in df.columns and (df['role_factor'] != 1.0).any():
+            display_cols.append('role_factor')
+
         st.dataframe(df[display_cols], use_container_width=True, height=500)
 
-        # Export
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
         rl = st.session_state.round_label or 'Current'
@@ -1201,7 +1215,7 @@ def main():
 
         with col3:
             if st.session_state.df_stat_proj is not None:
-                buf = io.BytesIO()
+                buf  = io.BytesIO()
                 df_s = st.session_state.df_stat_proj
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                     for sheet, proj_col, mean_col, lines, prefix in [
@@ -1237,7 +1251,7 @@ def main():
             st.info("Run projections first.")
             return
 
-        players = st.session_state.df_proj['player'].tolist()
+        players  = st.session_state.df_proj['player'].tolist()
         selected = st.selectbox("Select player", players)
 
         proj_row = st.session_state.df_proj[st.session_state.df_proj['player']==selected]
@@ -1251,6 +1265,11 @@ def main():
             col3.metric("Confidence", f"{r['confidence']}%")
             col4.metric("Variance", f"{r['variance']}%")
 
+            # Show role boost if applied
+            if r.get('role_factor', 1.0) != 1.0:
+                boost_pct = round((r['role_factor'] - 1.0) * 100)
+                st.info(f"Role inflation applied: **{'+' if boost_pct > 0 else ''}{boost_pct}%** (factor {r['role_factor']})")
+
             st.markdown("**Factors applied**")
             fc1,fc2,fc3 = st.columns(3)
             fc1.metric("Form factor",     r.get('form_factor','–'))
@@ -1262,15 +1281,14 @@ def main():
 
         if len(stat_row):
             r = stat_row.iloc[0]
-            # Last 10 games
             st.markdown("---")
             st.markdown("**Last 10 games**")
             if st.session_state.df_stats is not None:
                 FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
-                def rsort(r):
-                    r = str(r).strip()
-                    if r in FINALS_ORDER: return FINALS_ORDER[r]
-                    try: return int(r)
+                def rsort(x):
+                    x = str(x).strip()
+                    if x in FINALS_ORDER: return FINALS_ORDER[x]
+                    try: return int(x)
                     except: return 999
                 hist = st.session_state.df_stats[st.session_state.df_stats['name']==selected].copy()
                 hist['_rs'] = hist['round'].map(rsort)
@@ -1302,7 +1320,6 @@ def main():
                     })
             st.dataframe(pd.DataFrame(stat_display), use_container_width=True, hide_index=True)
 
-            # O/U probabilities
             st.markdown("**O/U Probabilities**")
             for stat, prefix, label, lines in [
                 ('disposals','disp','Disposals',DISPOSAL_LINES),
@@ -1343,17 +1360,17 @@ def main():
         if st.button("🔄 Start scrape", type="primary"):
             with st.spinner("Loading existing stats..."):
                 df_stats = load_stats()
-            log_area = st.empty()
+            log_area  = st.empty()
             log_lines = []
             venue_lookup   = {}
             is_home_lookup = {}
-            existing_keys = set()
+            existing_keys  = set()
             if not df_stats.empty:
                 for _, row in df_stats.iterrows():
                     existing_keys.add((row['name'], int(row['season']), str(row['round'])))
 
             new_records = []
-            players = df_roster.to_dict('records')
+            players     = df_roster.to_dict('records')
 
             for i, player in enumerate(players):
                 name = player.get('name') or player.get('Name','')
@@ -1396,7 +1413,7 @@ def main():
             return
 
         projector = AFLFantasyProjector(df_stats)
-        rows = []
+        rows  = []
         teams = sorted(set(df_stats['opponent'].unique()))
         for team in teams:
             row = {'Team': team}
