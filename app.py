@@ -817,14 +817,17 @@ def main():
     st.title("🏉 AFL Fantasy DFS")
 
     # ── ONE-TIME STARTUP: load persisted prefs from Supabase ──
-    if 'app_initialised' not in st.session_state:
+if 'app_initialised' not in st.session_state:
+    try:
         saved_fw    = load_factor_weights()
         saved_prefs = load_app_prefs()
-        st.session_state.factor_weights  = {k: float(saved_fw.get(k, 1.0)) for k in FACTOR_KEYS}
-        st.session_state.saved_season    = saved_prefs.get('season', None)
-        st.session_state.saved_round     = saved_prefs.get('round',  None)
-        st.session_state.app_initialised = True
-
+    except:
+        saved_fw    = {}
+        saved_prefs = {}
+    st.session_state.factor_weights  = {k: float(saved_fw.get(k, 1.0)) for k in FACTOR_KEYS}
+    st.session_state.saved_season    = saved_prefs.get('season', None)
+    st.session_state.saved_round     = saved_prefs.get('round',  None)
+    st.session_state.app_initialised = True
     # ── SESSION STATE DEFAULTS ────────────────────────────────
     for key, default in [
         ('df_stats',           None),
