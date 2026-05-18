@@ -817,18 +817,14 @@ def main():
     st.title("🏉 AFL Fantasy DFS")
 
     # ── ONE-TIME STARTUP: load persisted prefs from Supabase ──
-if 'app_initialised' not in st.session_state:
-    try:
+    if 'app_initialised' not in st.session_state:
         saved_fw    = load_factor_weights()
         saved_prefs = load_app_prefs()
-    except:
-        saved_fw    = {}
-        saved_prefs = {}
-    st.session_state.factor_weights  = {k: float(saved_fw.get(k, 1.0)) for k in FACTOR_KEYS}
-    st.session_state.saved_season    = saved_prefs.get('season', None)
-    st.session_state.saved_round     = saved_prefs.get('round',  None)
-    st.session_state.app_initialised = True
-    
+        st.session_state.factor_weights  = {k: float(saved_fw.get(k, 1.0)) for k in FACTOR_KEYS}
+        st.session_state.saved_season    = saved_prefs.get('season', None)
+        st.session_state.saved_round     = saved_prefs.get('round',  None)
+        st.session_state.app_initialised = True
+
     # ── SESSION STATE DEFAULTS ────────────────────────────────
     for key, default in [
         ('df_stats',           None),
@@ -1154,7 +1150,7 @@ if 'app_initialised' not in st.session_state:
                         candidates = [
                             row for _, row in st.session_state.ds_players.iterrows()
                             if row['team'] == mp_team
-                            and mp_pos in row['position'].split('/')
+                            and row['position'].split('/')[0] == mp_pos
                         ]
 
                         if not candidates:
@@ -1184,7 +1180,7 @@ if 'app_initialised' not in st.session_state:
                                     min_value=-10,
                                     max_value=40,
                                     value=int(current_pct),
-                                    step=2,
+                                    step=5,
                                     key=f"role_{mp_name}_{p}",
                                     help=f"% boost applied to {p}'s base projection"
                                 )
@@ -1259,8 +1255,6 @@ if 'app_initialised' not in st.session_state:
                 'manual_role_boosts': st.session_state.manual_role_boosts,
             })
             st.success(f"Slate '{st.session_state.slate_name}' saved!")
-            st.session_state.saved_slates = load_saved_slates()
-            st.rerun()
 
     # ══════════════════════════════════════════════════════════
     # RESULTS PAGE
