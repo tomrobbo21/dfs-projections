@@ -828,6 +828,7 @@ if 'app_initialised' not in st.session_state:
     st.session_state.saved_season    = saved_prefs.get('season', None)
     st.session_state.saved_round     = saved_prefs.get('round',  None)
     st.session_state.app_initialised = True
+    
     # ── SESSION STATE DEFAULTS ────────────────────────────────
     for key, default in [
         ('df_stats',           None),
