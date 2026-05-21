@@ -1475,9 +1475,9 @@ def main():
             players     = df_roster.to_dict('records')
 
             for i, player in enumerate(players):
-            name = player.get('ds_name') or player.get('name') or player.get('Name','')
-            team = player.get('team') or player.get('Team','')
-            pos  = player.get('position') or player.get('Position','MID')
+                name = player.get('ds_name') or player.get('name') or player.get('Name','')
+                team = player.get('team') or player.get('Team','')
+                pos  = player.get('position') or player.get('Position','MID')
                 if not name: continue
 
                 key = (name, season, str(round_num))
