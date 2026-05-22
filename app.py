@@ -1180,7 +1180,7 @@ def main():
                                     min_value=-10,
                                     max_value=40,
                                     value=int(current_pct),
-                                    step=5,
+                                    step=2,
                                     key=f"role_{mp_name}_{p}",
                                     help=f"% boost applied to {p}'s base projection"
                                 )
