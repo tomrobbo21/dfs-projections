@@ -1464,11 +1464,29 @@ def main():
         if st.button("🔄 Start scrape", type="primary"):
             with st.spinner("Loading existing stats..."):
                 df_stats = load_stats()
-            log_area       = st.empty()
-            log_lines      = []
-            venue_lookup   = {}
-            is_home_lookup = {}
-            existing_keys  = set()
+            with st.spinner("Building venue lookup..."):
+                sb = get_supabase()
+                fix_resp = sb.table('fixtures').select('*').execute()
+                venue_lookup   = {}
+                is_home_lookup = {}
+                if fix_resp.data:
+                    for row in fix_resp.data:
+                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
+                        date_str = row.get('Date','')
+                        try:
+                            from datetime import datetime
+                            game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
+                        except:
+                            continue
+                        venue_lookup[(home, away, game_date)] = venue
+                        venue_lookup[(away, home, game_date)] = venue
+                        is_home_lookup[(home, away, game_date)] = True
+                        is_home_lookup[(away, home, game_date)] = False
+            log_area = st.empty()
+            log_lines = []
+            existing_keys = set()
             if not df_stats.empty:
                 for _, row in df_stats.iterrows():
                     existing_keys.add((row['name'], int(row['season']), str(row['round'])))
