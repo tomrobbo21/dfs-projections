@@ -1270,18 +1270,23 @@ def main():
 
         df = st.session_state.df_proj.copy()
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             search = st.text_input("🔍 Search player", "")
         with col2:
             pos_filter = st.selectbox("Position", ["All","MID","DEF","FWD","RUC"])
         with col3:
+            teams = ["All"] + sorted(st.session_state.df_proj['team'].dropna().unique().tolist())
+            team_filter = st.selectbox("Team", teams)
+        with col4:
             sort_by = st.selectbox("Sort by", ["projection","value","ceiling","floor","confidence"])
 
         if search:
             df = df[df['player'].str.contains(search, case=False)]
         if pos_filter != "All":
             df = df[df['position']==pos_filter]
+        if team_filter != "All":
+            df = df[df['team']==team_filter]
         df = df.sort_values(sort_by, ascending=False).reset_index(drop=True)
         df.index += 1
 
