@@ -72,6 +72,7 @@ FIXTURE_VENUE_MAP = {
     'University of Tasmania Stadium':'University of Tasmania Stadium',
     'Mars Stadium':'Mars Stadium','Norwood Oval':'Norwood Oval',
     'Hands Oval':'Hands Oval','Adelaide Hills':'Mount Barker',
+    'Cazalys Stadium':'Cazalys Stadium',
 }
 
 AFLT_VENUE_MAP = {
@@ -85,6 +86,7 @@ AFLT_VENUE_MAP = {
     'Norwood Oval':'Norwood Oval','Hands Oval':'Hands Oval',
     'Mars Stadium':'Mars Stadium','Eureka Stadium':'Mars Stadium',
     'Subiaco':'Subiaco Oval','Mount Barker':'Mount Barker',
+    'Cazalys Stadium':'Cazalys Stadium',
 }
 
 VENUE_CITY = {
@@ -108,8 +110,10 @@ VENUE_CITY = {
     'Hands Oval':                     ('Bunbury',       -33.3271,  115.6414),
     'Mount Barker':                   ('Adelaide',      -35.0700,  138.8600),
     'Subiaco Oval':                   ('Perth',         -31.9505,  115.8890),
+    'Cazalys Stadium':                ('Cairns',        -16.9186,  145.7781),
 }
 
+# CHANGE 1: Added Will Hayes and Will Edwards
 NAME_CORRECTIONS = {
     'Tom Lynch':'Tom_Lynch1','Bailey Williams':'Bailey_Williams0',
     'Bailey J. Williams':'Bailey_Williams1','Matthew Kennedy':'Matthew_Kennedy1',
@@ -132,6 +136,7 @@ NAME_CORRECTIONS = {
     'Tom Green':'Tom_Green1','Henry Smith':'Henry_Smith1',
     'Jack Carroll':'Jack_Carroll1','Joshua Draper':'Josh_Draper',
     'Nicholas Madden':'Nick_Madden','Thomas Edwards':'Tom_Edwards',
+    'William Hayes':'Will_Hayes1','William Edwards':'Will_Edwards',
 }
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -262,7 +267,6 @@ def save_factor_weights(weights):
     ).execute()
 
 def load_app_prefs():
-    """Persisted app preferences (round/season selection). Stored in factor_weights table, id=2."""
     sb = get_supabase()
     try:
         resp = sb.table('factor_weights').select('*').eq('id', 2).execute()
@@ -350,10 +354,10 @@ def parse_draftstars_csv(file_bytes):
 
     out_players = []
     if status_col and status_col in df.columns:
+        active_statuses = ['NAMED IN TEAM TO PLAY', 'CONFIRMED IN TEAM TO PLAY']
         active = df[
-            df[status_col].str.upper().str.contains('NAMED IN TEAM TO PLAY', na=False) |
-            df[status_col].str.upper().str.contains('CONFIRMED IN TEAM TO PLAY', na=False)
-        ][name_col].tolist()
+            df[status_col].str.upper().str.strip().isin(active_statuses)
+        ][name_col].unique().tolist()
 
         out_df = df[df[status_col].str.upper().str.strip() == 'OUT']
         seen = set()
@@ -370,30 +374,6 @@ def parse_draftstars_csv(file_bytes):
 
     players = players.dropna(subset=['ds_name']).reset_index(drop=True)
     return players, out_players
-
-# ── FIXTURES ──────────────────────────────────────────────────
-
-def extract_fixtures_from_ds(df_players):
-    fixtures = []
-    if 'game_info' not in df_players.columns:
-        return fixtures
-    seen = set()
-    for _, row in df_players.iterrows():
-        gi = str(row.get('game_info', ''))
-        if not gi or gi == 'nan': continue
-        m = re.match(r'(.+?)\s+vs\s+(.+?)(?:\s+\(|$)', gi, re.IGNORECASE)
-        if not m: continue
-        h = DS_TEAM_MAP.get(m.group(1).strip(), m.group(1).strip())
-        a = DS_TEAM_MAP.get(m.group(2).strip(), m.group(2).strip())
-        key = tuple(sorted([h, a]))
-        if key in seen: continue
-        seen.add(key)
-        team = DS_TEAM_MAP.get(row['team'], row['team'])
-        opp  = a if team == h else h
-        venue_match = re.search(r'\((.+?)\)', gi)
-        venue = FIXTURE_VENUE_MAP.get(venue_match.group(1).strip(), venue_match.group(1).strip()) if venue_match else 'TBC'
-        fixtures.append({'home_team': h, 'away_team': a, 'venue': venue})
-    return fixtures
 
 # ── SCRAPING ──────────────────────────────────────────────────
 
@@ -471,6 +451,7 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
     except Exception as e:
         return [], f'error:{e}'
 
+# CHANGE 3: Added middle initial removal and suffix stripping fallbacks
 def scrape_with_fallbacks(player_name, team, position, seasons, venue_lookup, is_home_lookup=None):
     EXPANSIONS = {
         'Matt':'Matthew','Tom':'Thomas','Will':'William','Sam':'Samuel',
@@ -482,11 +463,26 @@ def scrape_with_fallbacks(player_name, team, position, seasons, venue_lookup, is
     }
     r, s = scrape_player_afltables(player_name, team, position, seasons, venue_lookup, is_home_lookup)
     if s == 'ok' and r: return r, s
+
+    # Try expanding short first name
     parts = player_name.split()
     if parts and parts[0] in EXPANSIONS:
         exp = EXPANSIONS[parts[0]] + ' ' + ' '.join(parts[1:])
         r, s = scrape_player_afltables(exp, team, position, seasons, venue_lookup, is_home_lookup)
         if s == 'ok' and r: return r, s
+
+    # Try removing middle initials (e.g. "Tom J. Lynch" -> "Tom Lynch")
+    ni = re.sub(r'\s+[A-Z]\.\s+', ' ', player_name).strip()
+    if ni != player_name:
+        r, s = scrape_player_afltables(ni, team, position, seasons, venue_lookup, is_home_lookup)
+        if s == 'ok' and r: return r, s
+
+    # Try removing suffixes (Jr., Sr.)
+    ns = re.sub(r'\s+Jr\.?$|\s+Sr\.?$', '', player_name, flags=re.I).strip()
+    if ns != player_name:
+        r, s = scrape_player_afltables(ns, team, position, seasons, venue_lookup, is_home_lookup)
+        if s == 'ok' and r: return r, s
+
     return [], 'not_found'
 
 # ── PROJECTION MODEL ──────────────────────────────────────────
@@ -764,13 +760,11 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
 
-    # Apply manual role boosts
     df_proj['role_factor'] = df_proj['player'].map(role_factors).fillna(1.0)
     df_proj['projection']  = (df_proj['projection']*df_proj['role_factor']).round(1)
     df_proj['floor']       = (df_proj['floor']     *df_proj['role_factor']).round(1)
     df_proj['ceiling']     = (df_proj['ceiling']   *df_proj['role_factor']).round(1)
 
-    # Merge salary
     if 'salary' in ds_players.columns:
         sal = ds_players.set_index('ds_name')['salary'].to_dict()
         df_proj['salary'] = df_proj['player'].map(sal)
@@ -778,7 +772,6 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
         df_proj = df_proj[df_proj['salary'].notna()].reset_index(drop=True)
         df_proj.index += 1
 
-    # Stat projections
     opp_stat_ratings = build_opp_stat_ratings(df_stats)
     named     = set(df_proj['player'].tolist())
     stat_rows = []
@@ -811,12 +804,117 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     df_stat.index += 1
     return df_proj, df_stat
 
+
+# ── WITH/WITHOUT ANALYSIS ─────────────────────────────────────
+
+def calc_with_without(df_stats, missing_player, missing_team, named_players_df):
+    """
+    For each named teammate, calculate their average fantasy score
+    in rounds where missing_player was out vs rounds they played together.
+    Uses last 2 seasons only. Returns a sorted DataFrame.
+    """
+    FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
+    def rsort(r):
+        r = str(r).strip()
+        if r in FINALS_ORDER: return FINALS_ORDER[r]
+        try: return int(r)
+        except: return 999
+
+    recent_seasons = sorted(df_stats['season'].unique())[-2:]
+    recent = df_stats[df_stats['season'].isin(recent_seasons)].copy()
+    recent = recent[recent['tog_pct'] >= 0.45]
+
+    # Get all rounds the missing player's team played
+    team_rounds = set(
+        zip(recent[recent['team'] == missing_team]['season'],
+            recent[recent['team'] == missing_team]['round'])
+    )
+
+    # Get rounds the missing player played (including low TOG)
+    mp_all = df_stats[
+        (df_stats['name'] == missing_player) &
+        (df_stats['season'].isin(recent_seasons))
+    ]
+    mp_played = set(zip(mp_all['season'], mp_all['round']))
+    mp_low_tog = set(zip(
+        mp_all[mp_all['tog_pct'] < 0.35]['season'],
+        mp_all[mp_all['tog_pct'] < 0.35]['round']
+    ))
+
+    # Out rounds = team played but missing player didn't (or had very low TOG)
+    out_rounds = (team_rounds - mp_played) | mp_low_tog
+
+    # Named teammates only
+    named_set = set(named_players_df['ds_name'].tolist())
+
+    rows = []
+    for _, tm_row in named_players_df.iterrows():
+        teammate = tm_row['ds_name']
+        if teammate == missing_player: continue
+
+        tm_data = recent[recent['name'] == teammate]
+        if len(tm_data) == 0: continue
+
+        # 2026 season avg
+        avg_2026_data = df_stats[
+            (df_stats['name'] == teammate) &
+            (df_stats['season'] == 2026) &
+            (df_stats['tog_pct'] >= 0.45)
+        ]
+        avg_2026 = round(float(avg_2026_data['fantasy_score'].mean()), 1) if len(avg_2026_data) >= 3 else None
+
+        with_scores    = [r['fantasy_score'] for _, r in tm_data.iterrows()
+                          if (r['season'], r['round']) not in out_rounds]
+        without_scores = [r['fantasy_score'] for _, r in tm_data.iterrows()
+                          if (r['season'], r['round']) in out_rounds]
+
+        n_out = len(without_scores)
+        sufficient = n_out >= 3
+
+        if sufficient:
+            avg_with    = round(float(np.mean(with_scores)), 1) if with_scores else None
+            avg_without = round(float(np.mean(without_scores)), 1)
+            if avg_with and avg_with > 0:
+                diff    = round(avg_without - avg_with, 1)
+                diff_pct = round((diff / avg_with) * 100, 1)
+            else:
+                diff = diff_pct = None
+        else:
+            avg_with = avg_without = diff = diff_pct = None
+
+        if diff_pct is not None:
+            flag = '✅' if diff_pct > 3 else ('🔴' if diff_pct < -3 else '⚪')
+        else:
+            flag = '—'
+
+        rows.append({
+            'ds_name':    teammate,
+            'position':   tm_row['position'].split('/')[0],
+            'avg_2026':   avg_2026,
+            'avg_with':   avg_with,
+            'avg_without':avg_without,
+            'diff':       diff,
+            'diff_pct':   diff_pct,
+            'n_out':      n_out,
+            'sufficient': sufficient,
+            'flag':       flag,
+        })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    # Sort: sufficient data first, then by avg_2026 descending
+    df['_sort_key'] = df['avg_2026'].fillna(0)
+    df = df.sort_values(['sufficient', '_sort_key'], ascending=[False, False]).drop(columns='_sort_key')
+    return df.reset_index(drop=True)
+
+
 # ── STREAMLIT UI ──────────────────────────────────────────────
 
 def main():
     st.title("🏉 AFL Fantasy DFS")
 
-    # ── ONE-TIME STARTUP: load persisted prefs from Supabase ──
     if 'app_initialised' not in st.session_state:
         saved_fw    = load_factor_weights()
         saved_prefs = load_app_prefs()
@@ -825,7 +923,6 @@ def main():
         st.session_state.saved_round     = saved_prefs.get('round',  None)
         st.session_state.app_initialised = True
 
-    # ── SESSION STATE DEFAULTS ────────────────────────────────
     for key, default in [
         ('df_stats',           None),
         ('ds_players',         None),
@@ -910,8 +1007,6 @@ def main():
         df_fixtures = load_fixtures()
         if not df_fixtures.empty:
             seasons = sorted(df_fixtures['file_year'].unique(), reverse=True)
-
-            # Restore saved season selection
             saved_season = st.session_state.get('saved_season')
             season_index = seasons.index(saved_season) if saved_season in seasons else 0
             sel_season   = st.selectbox("Season", seasons, index=season_index, key="sel_season")
@@ -919,13 +1014,10 @@ def main():
             df_season = df_fixtures[df_fixtures['file_year'] == sel_season]
             rounds    = sorted(df_season['Round Number'].unique(),
                                key=lambda r: int(r) if str(r).isdigit() else 999)
-
-            # Restore saved round selection
             saved_round = st.session_state.get('saved_round')
             round_index = rounds.index(saved_round) if saved_round in rounds else 0
             sel_round   = st.selectbox("Round", rounds, index=round_index, key="sel_round")
 
-            # Persist to Supabase when selection changes
             if sel_season != st.session_state.get('saved_season') or sel_round != st.session_state.get('saved_round'):
                 st.session_state.saved_season = sel_season
                 st.session_state.saved_round  = sel_round
@@ -953,7 +1045,6 @@ def main():
                 players, out_players = parse_draftstars_csv(ds_file.read())
                 st.session_state.ds_players         = players
                 st.session_state.out_players        = out_players
-                # Reset role inflation when CSV changes
                 st.session_state.inflate_set        = set()
                 st.session_state.manual_role_boosts = {}
                 st.success(f"✅ {len(players)} named players · {len(out_players)} OUT")
@@ -997,8 +1088,6 @@ def main():
                     step=0.05,
                     key=f"fw_{k}"
                 )
-
-        # Auto-save factor weights to Supabase on change
         if fw != st.session_state.factor_weights:
             st.session_state.factor_weights = fw
             save_factor_weights(fw)
@@ -1052,23 +1141,36 @@ def main():
                         del st.session_state.tog_map[player]; st.rerun()
 
         # ── DEBUTANTS ─────────────────────────────────────────
+        # CHANGE 7: Position-based default (66% of 2026 position average)
         st.markdown("**Debutant / no history players**")
         if st.session_state.ds_players is not None and st.session_state.df_stats is not None:
             known   = set(st.session_state.df_stats['name'].unique())
             unnamed = [
-                row['ds_name'] for _, row in st.session_state.ds_players.iterrows()
+                row for _, row in st.session_state.ds_players.iterrows()
                 if row['ds_name'] not in known
             ]
+
+            # Build 2026 position averages for defaults
+            df_2026 = st.session_state.df_stats[
+                (st.session_state.df_stats['season'] == 2026) &
+                (st.session_state.df_stats['tog_pct'] >= 0.45)
+            ]
+            pos_avgs_2026 = df_2026.groupby('position')['fantasy_score'].mean().to_dict()
+
             if unnamed:
                 st.warning(f"{len(unnamed)} players have no stats history — enter a base score for each:")
-                for p in unnamed:
+                for row in unnamed:
+                    p   = row['ds_name']
+                    pos = row['position'].split('/')[0]
+                    pos_avg = pos_avgs_2026.get(pos, pos_avgs_2026.get('MID', 60))
+                    default_score = round(pos_avg * 0.66, 1)
                     c1, c2 = st.columns([3,1])
                     with c1:
-                        st.write(f"**{p}**")
+                        st.write(f"**{p}** ({pos} — pos avg {round(pos_avg,1)})")
                     with c2:
                         score = st.number_input(
                             "Base", 0.0, 150.0,
-                            float(st.session_state.manual_scores.get(p, 40.0)),
+                            float(st.session_state.manual_scores.get(p, default_score)),
                             5.0, key=f"deb_{p}"
                         )
                         st.session_state.manual_scores[p] = score
@@ -1097,96 +1199,134 @@ def main():
                     del st.session_state.manual_scores[p]; st.rerun()
 
         # ── 6. ROLE INFLATION ─────────────────────────────────
+        # CHANGE 4 & 6: 2026-only display avg, 2-season threshold, with/without table
         if st.session_state.out_players and st.session_state.df_stats is not None:
             st.subheader("6. Role Inflation")
 
-            df_s           = st.session_state.df_stats
-            recent_seasons = sorted(df_s['season'].unique())[-2:]
-            recent         = df_s[df_s['season'].isin(recent_seasons)]
-            recent         = recent[recent['tog_pct'] >= 0.45]
+            df_s = st.session_state.df_stats
 
-            significant = [
-                mp for mp in st.session_state.out_players
-                if len(df_s[df_s['name'] == mp['name']]) >= 3
-                and df_s[df_s['name'] == mp['name']]['fantasy_score'].mean() >= 80
-            ]
+            # Threshold check: 2 seasons, TOG >= 0.45, avg >= 80
+            recent_2s       = sorted(df_s['season'].unique())[-2:]
+            recent_2s_data  = df_s[df_s['season'].isin(recent_2s) & (df_s['tog_pct'] >= 0.45) if 'tog_pct' in df_s.columns else df_s['season'].isin(recent_2s)]
+
+            # Display avg: 2026 only, TOG >= 0.45
+            df_2026_tog = df_s[(df_s['season'] == 2026) & (df_s['tog_pct'] >= 0.45)]
+
+            significant = []
+            for mp in st.session_state.out_players:
+                mp_recent = df_s[
+                    (df_s['name'] == mp['name']) &
+                    (df_s['season'].isin(recent_2s)) &
+                    (df_s['tog_pct'] >= 0.45)
+                ]
+                if len(mp_recent) >= 3 and mp_recent['fantasy_score'].mean() >= 80:
+                    significant.append(mp)
 
             if not significant:
-                st.info("No OUT players averaging 80+ this week.")
+                st.info("No OUT players averaging 80+ (last 2 seasons) this week.")
             else:
-                # Step 1 — checkboxes
-                # Rebuild inflate_set fresh from widget return values each render.
-                # This is the correct Streamlit pattern — reading widget state via
-                # the return value rather than mutating session state inside the
-                # conditional, which causes a one-render lag before Step 2 appears.
                 st.markdown("**Step 1 — Select confirmed outs that will inflate teammates**")
                 new_inflate_set = set()
                 for mp in significant:
-                    avg     = round(df_s[df_s['name'] == mp['name']]['fantasy_score'].mean(), 1)
+                    # Display 2026-only average
+                    mp_2026 = df_2026_tog[df_2026_tog['name'] == mp['name']]
+                    if len(mp_2026) >= 1:
+                        disp_avg = round(float(mp_2026['fantasy_score'].mean()), 1)
+                        avg_label = f"2026 avg {disp_avg}"
+                    else:
+                        mp_rec = df_s[
+                            (df_s['name'] == mp['name']) &
+                            (df_s['season'].isin(recent_2s)) &
+                            (df_s['tog_pct'] >= 0.45)
+                        ]
+                        disp_avg = round(float(mp_rec['fantasy_score'].mean()), 1) if len(mp_rec) else '–'
+                        avg_label = f"recent avg {disp_avg}"
+
                     checked = mp['name'] in st.session_state.inflate_set
                     if st.checkbox(
-                        f"{mp['name']} ({mp['team']} · {mp['position']} · avg {avg})",
+                        f"{mp['name']} ({mp['team']} · {mp['position']} · {avg_label})",
                         value=checked,
                         key=f"inf_{mp['name']}"
                     ):
                         new_inflate_set.add(mp['name'])
                 st.session_state.inflate_set = new_inflate_set
 
-                # Step 2 — sliders per checked out player
+                # Step 2 — with/without table + inline sliders
                 if st.session_state.inflate_set and st.session_state.ds_players is not None:
-                    st.markdown("**Step 2 — Set manual boost % for affected teammates**")
+                    st.markdown("**Step 2 — Review with/without data and set boosts**")
 
                     for mp_name in sorted(st.session_state.inflate_set):
                         mp = next(
                             (p for p in st.session_state.out_players if p['name'] == mp_name),
                             None
                         )
-                        if not mp:
-                            continue
+                        if not mp: continue
 
                         mp_team = mp['team']
-                        mp_pos  = mp['position']
+                        mp_2026 = df_2026_tog[df_2026_tog['name'] == mp_name]
+                        mp_avg  = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026) >= 1 else '–'
 
-                        candidates = [
-                            row for _, row in st.session_state.ds_players.iterrows()
-                            if row['team'] == mp_team
-                            and row['position'].split('/')[0] == mp_pos
-                        ]
+                        st.markdown(f"**{mp_name}** is OUT · {mp_team} · 2026 avg {mp_avg}")
 
-                        if not candidates:
-                            st.caption(
-                                f"No named {mp_pos}s from {mp_team} found in slate for {mp_name}."
-                            )
+                        # Calculate with/without for named teammates
+                        ww_df = calc_with_without(
+                            df_s, mp_name, mp_team,
+                            st.session_state.ds_players
+                        )
+
+                        if ww_df.empty:
+                            st.caption("No named teammates found in slate.")
                             continue
 
-                        mp_avg = round(df_s[df_s['name'] == mp_name]['fantasy_score'].mean(), 1)
-                        st.markdown(f"_{mp_name} is OUT (avg {mp_avg}) — {mp_team} {mp_pos}s:_")
+                        # Render table with inline sliders
+                        header_cols = st.columns([2.5, 0.8, 0.9, 0.9, 0.9, 1.1, 0.6, 0.4, 2.0])
+                        headers = ['Player','Pos','2026 avg','With avg','Without','Diff','Games','','Boost']
+                        for hc, ht in zip(header_cols, headers):
+                            hc.markdown(f"**{ht}**")
 
-                        cols = st.columns(min(len(candidates), 3))
-                        for i, row in enumerate(candidates):
-                            p     = row['ds_name']
-                            p_rec = recent[recent['name'] == p]
-                            p_avg = (
-                                round(float(p_rec['fantasy_score'].mean()), 1)
-                                if len(p_rec) >= 3 else None
-                            )
-                            label       = f"{p} (avg {p_avg})" if p_avg else p
-                            current_pct = round(
-                                (st.session_state.manual_role_boosts.get(p, 1.0) - 1.0) * 100
-                            )
-                            with cols[i % 3]:
+                        for _, ww_row in ww_df.iterrows():
+                            p        = ww_row['ds_name']
+                            row_cols = st.columns([2.5, 0.8, 0.9, 0.9, 0.9, 1.1, 0.6, 0.4, 2.0])
+
+                            # Dim insufficient rows
+                            suf = ww_row['sufficient']
+
+                            with row_cols[0]:
+                                st.write(f"{'**' if suf else ''}{p}{'**' if suf else ''}")
+                            with row_cols[1]:
+                                st.write(ww_row['position'])
+                            with row_cols[2]:
+                                st.write(str(ww_row['avg_2026']) if ww_row['avg_2026'] is not None else '—')
+                            with row_cols[3]:
+                                st.write(str(ww_row['avg_with']) if ww_row['avg_with'] is not None else '—')
+                            with row_cols[4]:
+                                st.write(str(ww_row['avg_without']) if ww_row['avg_without'] is not None else '—')
+                            with row_cols[5]:
+                                if ww_row['diff'] is not None:
+                                    diff_str = f"{'+' if ww_row['diff'] >= 0 else ''}{ww_row['diff']} ({'+' if ww_row['diff_pct'] >= 0 else ''}{ww_row['diff_pct']}%)"
+                                    st.write(diff_str)
+                                else:
+                                    st.caption("insufficient data")
+                            with row_cols[6]:
+                                st.write(str(ww_row['n_out']))
+                            with row_cols[7]:
+                                st.write(ww_row['flag'])
+                            with row_cols[8]:
+                                current_pct = round(
+                                    (st.session_state.manual_role_boosts.get(p, 1.0) - 1.0) * 100
+                                )
                                 boost_pct = st.slider(
-                                    label,
+                                    f"boost_{p}",
                                     min_value=-10,
                                     max_value=40,
                                     value=int(current_pct),
                                     step=2,
                                     key=f"role_{mp_name}_{p}",
-                                    help=f"% boost applied to {p}'s base projection"
+                                    label_visibility="collapsed"
                                 )
-                                st.session_state.manual_role_boosts[p] = round(
-                                    1.0 + boost_pct / 100, 4
-                                )
+                                st.session_state.manual_role_boosts[p] = round(1.0 + boost_pct / 100, 4)
+
+                        st.markdown("---")
 
                     # Active boosts summary
                     active_boosts = {
@@ -1396,7 +1536,8 @@ def main():
                     except: return 999
                 hist = st.session_state.df_stats[st.session_state.df_stats['name']==selected].copy()
                 hist['_rs'] = hist['round'].map(rsort)
-                hist = hist.sort_values(['season','_rs']).drop(columns='_rs').tail(10)
+                hist = hist.sort_values(['season','_rs']).drop(columns='_rs')
+                hist = hist[hist['tog_pct'] >= 0.45].tail(10)
                 hist = hist[['season','round','opponent','venue','fantasy_score',
                              'kicks','handballs','marks','tackles','hit_outs','tog_pct']].copy()
                 hist['tog_pct'] = (hist['tog_pct']*100).round(0).astype(int).astype(str)+'%'
@@ -1481,7 +1622,6 @@ def main():
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
                         date_str = row.get('Date','')
                         try:
-                            from datetime import datetime
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
                         except:
                             continue
@@ -1489,7 +1629,8 @@ def main():
                         venue_lookup[(away, home, game_date)] = venue
                         is_home_lookup[(home, away, game_date)] = True
                         is_home_lookup[(away, home, game_date)] = False
-            log_area = st.empty()
+
+            log_area  = st.empty()
             log_lines = []
             existing_keys = set()
             if not df_stats.empty:
@@ -1508,7 +1649,7 @@ def main():
                 key = (name, season, str(round_num))
                 if key in existing_keys:
                     log_lines.append(f"[{i+1}/{len(players)}] {name} — already have Rd {round_num}")
-                    log_area.code('\n'.join(log_lines[-20:]))
+                    log_area.code('\n'.join(log_lines[-50:]))
                     continue
 
                 records, status = scrape_with_fallbacks(
@@ -1525,7 +1666,7 @@ def main():
                     log_lines.append(f"[{i+1}/{len(players)}] {name} ✓  score={fs}")
                 else:
                     log_lines.append(f"[{i+1}/{len(players)}] {name} — {status}")
-                log_area.code('\n'.join(log_lines[-20:]))
+                log_area.code('\n'.join(log_lines[-50:]))
 
             if new_records:
                 save_stats_to_supabase(new_records)
