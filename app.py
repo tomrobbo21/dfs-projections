@@ -1275,7 +1275,21 @@ def main():
                 st.markdown("**Manual boosts**")
                 st.caption("Use the With/Without page to research teammate impacts.")
 
+                # Manual search for any other player
+                st.markdown("**Add player manually**")
+                boost_player = st.selectbox(
+                    "Search player",
+                    [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
+                    key="boost_select"
+                )
+                if boost_player and boost_player not in st.session_state.manual_role_boosts:
+                    if st.button("Add", key="add_manual_boost_btn"):
+                        st.session_state.manual_role_boosts[boost_player] = 1.0
+                        st.rerun()
+
+                # Render all sliders after add logic
                 if st.session_state.manual_role_boosts:
+                    st.markdown("**Boosts**")
                     for player in list(st.session_state.manual_role_boosts.keys()):
                         c1, c2 = st.columns([3, 1])
                         with c1:
@@ -1295,19 +1309,6 @@ def main():
                                 del st.session_state.manual_role_boosts[player]
                                 st.rerun()
 
-                # Manual search for any other player
-                st.markdown("**Add player manually**")
-                boost_player = st.selectbox(
-                    "Search player",
-                    [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
-                    key="boost_select"
-                )
-                if boost_player and boost_player not in st.session_state.manual_role_boosts:
-                    if st.button("Add", key="add_manual_boost_btn"):
-                        st.session_state.manual_role_boosts[boost_player] = 1.0
-                        st.rerun()
-
-                if st.session_state.manual_role_boosts:
                     if st.button("🔄 Reset all boosts"):
                         st.session_state.manual_role_boosts = {}
                         st.rerun()
