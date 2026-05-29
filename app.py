@@ -1283,9 +1283,7 @@ def main():
                     key="boost_select"
                 )
                 if boost_player and boost_player not in st.session_state.manual_role_boosts:
-                    if st.button("Add", key="add_manual_boost_btn"):
-                        st.session_state.manual_role_boosts[boost_player] = 1.0
-                        st.rerun()
+                    st.session_state.manual_role_boosts[boost_player] = 1.0
 
                 # Render all sliders after add logic
                 if st.session_state.manual_role_boosts:
