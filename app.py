@@ -1251,20 +1251,31 @@ def main():
                         new_inflate_set.add(mp['name'])
                 st.session_state.inflate_set = new_inflate_set
 
-                # Manual boost sliders
-                if st.session_state.ds_players is not None:
-                    st.markdown("**Manual boosts**")
-                    st.caption("Use the With/Without page to research which teammates benefit, then set boosts here.")
-                    boost_player = st.selectbox(
-                        "Add player to boost",
-                        [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
-                        key="boost_select"
+# Auto-populate same-position teammates for ticked OUT players
+            if st.session_state.inflate_set and st.session_state.ds_players is not None:
+                for mp_name in st.session_state.inflate_set:
+                    mp = next(
+                        (p for p in st.session_state.out_players if p['name'] == mp_name), None
                     )
-                    if boost_player and boost_player not in st.session_state.manual_role_boosts:
-                        if st.button("Add boost"):
-                            st.session_state.manual_role_boosts[boost_player] = 1.0
-                            st.rerun()
+                    if not mp: continue
+                    mp_pos = mp['position'].split('/')[0]
+                    mp_team = mp['team']
+                    # Find same-position teammates in slate
+                    same_pos = st.session_state.ds_players[
+                        (st.session_state.ds_players['team'] == mp_team) &
+                        (st.session_state.ds_players['position'].str.contains(mp_pos)) &
+                        (st.session_state.ds_players['ds_name'] != mp_name)
+                    ]['ds_name'].tolist()
+                    for p in same_pos:
+                        if p not in st.session_state.manual_role_boosts:
+                            st.session_state.manual_role_boosts[p] = 1.0
 
+            # Boost sliders
+            if st.session_state.ds_players is not None:
+                st.markdown("**Manual boosts**")
+                st.caption("Use the With/Without page to research teammate impacts.")
+
+                if st.session_state.manual_role_boosts:
                     for player in list(st.session_state.manual_role_boosts.keys()):
                         c1, c2 = st.columns([3, 1])
                         with c1:
@@ -1284,10 +1295,22 @@ def main():
                                 del st.session_state.manual_role_boosts[player]
                                 st.rerun()
 
-                    if st.session_state.manual_role_boosts:
-                        if st.button("🔄 Reset all boosts"):
-                            st.session_state.manual_role_boosts = {}
-                            st.rerun()
+                # Manual search for any other player
+                st.markdown("**Add player manually**")
+                boost_player = st.selectbox(
+                    "Search player",
+                    [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
+                    key="boost_select"
+                )
+                if boost_player and boost_player not in st.session_state.manual_role_boosts:
+                    if st.button("Add"):
+                        st.session_state.manual_role_boosts[boost_player] = 1.0
+                        st.rerun()
+
+                if st.session_state.manual_role_boosts:
+                    if st.button("🔄 Reset all boosts"):
+                        st.session_state.manual_role_boosts = {}
+                        st.rerun()
 
         # ── RUN / SAVE ────────────────────────────────────────
         st.markdown("---")
