@@ -851,7 +851,6 @@ def calc_with_without(df_stats, missing_player, missing_team, named_players_df):
     for _, tm_row in named_players_df.iterrows():
         teammate = tm_row['ds_name']
         if teammate == missing_player: continue
-        if tm_row['team'] != missing_team: continue
 
         tm_data = recent[recent['name'] == teammate]
         if len(tm_data) == 0: continue
@@ -949,7 +948,7 @@ def main():
         st.markdown("### 🏉 AFL Fantasy DFS")
         page = st.radio(
             "",
-            ["📊 Projections","📋 Results","📈 Stat Lines","⚙️ Add Round Data","🏟️ Opponent Ratings"],
+            ["📊 Projections","📋 Results","📈 Stat Lines","🔍 With/Without","⚙️ Add Round Data","🏟️ Opponent Ratings"],
             label_visibility="collapsed"
         )
 
@@ -1252,106 +1251,43 @@ def main():
                         new_inflate_set.add(mp['name'])
                 st.session_state.inflate_set = new_inflate_set
 
-                # Step 2 — with/without table + inline sliders
-                if st.session_state.inflate_set and st.session_state.ds_players is not None:
-                    st.markdown("**Step 2 — Review with/without data and set boosts**")
+                # Manual boost sliders
+                if st.session_state.ds_players is not None:
+                    st.markdown("**Manual boosts**")
+                    st.caption("Use the With/Without page to research which teammates benefit, then set boosts here.")
+                    boost_player = st.selectbox(
+                        "Add player to boost",
+                        [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
+                        key="boost_select"
+                    )
+                    if boost_player and boost_player not in st.session_state.manual_role_boosts:
+                        if st.button("Add boost"):
+                            st.session_state.manual_role_boosts[boost_player] = 1.0
+                            st.rerun()
 
-                    for mp_name in sorted(st.session_state.inflate_set):
-                        mp = next(
-                            (p for p in st.session_state.out_players if p['name'] == mp_name),
-                            None
-                        )
-                        if not mp: continue
+                    for player in list(st.session_state.manual_role_boosts.keys()):
+                        c1, c2 = st.columns([3, 1])
+                        with c1:
+                            current_pct = round((st.session_state.manual_role_boosts[player] - 1.0) * 100)
+                            boost_pct   = st.slider(
+                                f"{player}",
+                                min_value=-10,
+                                max_value=40,
+                                value=int(current_pct),
+                                step=2,
+                                format="%d%%",
+                                key=f"boost_{player}"
+                            )
+                            st.session_state.manual_role_boosts[player] = round(1.0 + boost_pct / 100, 4)
+                        with c2:
+                            if st.button("✕", key=f"rem_boost_{player}"):
+                                del st.session_state.manual_role_boosts[player]
+                                st.rerun()
 
-                        mp_team = mp['team']
-                        mp_2026 = df_2026_tog[df_2026_tog['name'] == mp_name]
-                        mp_avg  = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026) >= 1 else '–'
-
-                        st.markdown(f"**{mp_name}** is OUT · {mp_team} · 2026 avg {mp_avg}")
-
-                        # Calculate with/without for named teammates
-                        st.write(f"DEBUG: mp_name={mp_name}, mp_team={mp_team}")
-                        ww_df = calc_with_without(
-                            df_s, mp_name, mp_team,
-                            st.session_state.ds_players
-                        )
-
-                        if ww_df.empty:
-                            st.caption("No named teammates found in slate.")
-                            continue
-
-                        # Render table with inline sliders
-                        header_cols = st.columns([2.5, 0.8, 0.9, 0.9, 0.9, 1.1, 0.6, 0.4, 2.0])
-                        headers = ['Player','Pos','2026 avg','With avg','Without','Diff','Games','','Boost']
-                        for hc, ht in zip(header_cols, headers):
-                            hc.markdown(f"**{ht}**")
-
-                        for _, ww_row in ww_df.iterrows():
-                            p        = ww_row['ds_name']
-                            row_cols = st.columns([2.5, 0.8, 0.9, 0.9, 0.9, 1.1, 0.6, 0.4, 2.0])
-
-                            # Dim insufficient rows
-                            suf = ww_row['sufficient']
-
-                            with row_cols[0]:
-                                st.write(f"{'**' if suf else ''}{p}{'**' if suf else ''}")
-                            with row_cols[1]:
-                                st.write(ww_row['position'])
-                            with row_cols[2]:
-                                st.write(str(ww_row['avg_2026']) if ww_row['avg_2026'] is not None else '—')
-                            with row_cols[3]:
-                                st.write(str(ww_row['avg_with']) if ww_row['avg_with'] is not None else '—')
-                            with row_cols[4]:
-                                st.write(str(ww_row['avg_without']) if ww_row['avg_without'] is not None else '—')
-                            with row_cols[5]:
-                                if ww_row['diff'] is not None:
-                                    diff_str = f"{'+' if ww_row['diff'] >= 0 else ''}{ww_row['diff']} ({'+' if ww_row['diff_pct'] >= 0 else ''}{ww_row['diff_pct']}%)"
-                                    st.write(diff_str)
-                                else:
-                                    st.caption("insufficient data")
-                            with row_cols[6]:
-                                st.write(str(ww_row['n_out']))
-                            with row_cols[7]:
-                                st.write(ww_row['flag'])
-                            with row_cols[8]:
-                                current_pct = round(
-                                    (st.session_state.manual_role_boosts.get(p, 1.0) - 1.0) * 100
-                                )
-                                boost_pct = st.slider(
-                                    f"boost_{p}",
-                                    min_value=-10,
-                                    max_value=40,
-                                    value=int(current_pct),
-                                    step=2,
-                                    key=f"role_{mp_name}_{p}",
-                                    label_visibility="collapsed"
-                                )
-                                st.session_state.manual_role_boosts[p] = round(1.0 + boost_pct / 100, 4)
-
-                        st.markdown("---")
-
-                    # Active boosts summary
-                    active_boosts = {
-                        p: v for p, v in st.session_state.manual_role_boosts.items()
-                        if v != 1.0
-                    }
-                    if active_boosts:
-                        st.markdown("**Active boosts:**")
-                        st.dataframe(
-                            pd.DataFrame([
-                                {
-                                    'Player': p,
-                                    'Boost': f"+{round((v-1)*100)}%" if v > 1 else f"{round((v-1)*100)}%"
-                                }
-                                for p, v in sorted(active_boosts.items())
-                            ]),
-                            use_container_width=False,
-                            hide_index=True
-                        )
-
-                    if st.button("🔄 Reset all role boosts"):
-                        st.session_state.manual_role_boosts = {}
-                        st.rerun()
+                    if st.session_state.manual_role_boosts:
+                        if st.button("🔄 Reset all boosts"):
+                            st.session_state.manual_role_boosts = {}
+                            st.rerun()
 
         # ── RUN / SAVE ────────────────────────────────────────
         st.markdown("---")
@@ -1584,6 +1520,101 @@ def main():
                         for l in lines if f'{stat}_over_{l}' in r
                     }
                     st.dataframe(pd.DataFrame([ou_data]), use_container_width=True, hide_index=True)
+
+    # ══════════════════════════════════════════════════════════
+    # WITH/WITHOUT PAGE
+    # ══════════════════════════════════════════════════════════
+    elif page == "🔍 With/Without":
+        st.header("With/Without Analysis")
+        st.markdown("Research how teammates perform when a player is out. Use this to inform manual boosts on the Projections page.")
+
+        df_stats = st.session_state.df_stats if st.session_state.df_stats is not None else load_stats()
+        if df_stats is None or df_stats.empty:
+            st.info("No stats loaded yet.")
+        else:
+            teams      = sorted(df_stats['team'].dropna().unique().tolist())
+            sel_team   = st.selectbox("Select team", teams, key="ww_team")
+            team_players = sorted(df_stats[df_stats['team']==sel_team]['name'].unique().tolist())
+            sel_player = st.selectbox("Select missing player", team_players, key="ww_player")
+
+            if sel_player:
+                recent_2s = sorted(df_stats['season'].unique())[-2:]
+
+                # Out rounds
+                team_rounds = set(zip(
+                    df_stats[(df_stats['team']==sel_team) & (df_stats['season'].isin(recent_2s))]['season'],
+                    df_stats[(df_stats['team']==sel_team) & (df_stats['season'].isin(recent_2s))]['round']
+                ))
+                mp_all = df_stats[(df_stats['name']==sel_player) & (df_stats['season'].isin(recent_2s))]
+                mp_played  = set(zip(mp_all['season'], mp_all['round']))
+                mp_low_tog = set(zip(
+                    mp_all[mp_all['tog_pct']<0.35]['season'],
+                    mp_all[mp_all['tog_pct']<0.35]['round']
+                ))
+                out_rounds = (team_rounds - mp_played) | mp_low_tog
+
+                # 2026 avg for missing player
+                mp_2026 = df_stats[
+                    (df_stats['name']==sel_player) & (df_stats['season']==2026) & (df_stats['tog_pct']>=0.45)
+                ]
+                mp_avg_2026 = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026)>=1 else '–'
+                st.markdown(f"**{sel_player}** · {sel_team} · 2026 avg {mp_avg_2026} · {len(out_rounds)} out rounds (2025–2026)")
+
+                if len(out_rounds) < 3:
+                    st.warning(f"Only {len(out_rounds)} out round(s) available in last 2 seasons — insufficient data for reliable analysis.")
+                else:
+                    recent = df_stats[
+                        (df_stats['season'].isin(recent_2s)) & (df_stats['tog_pct']>=0.45)
+                    ].copy()
+
+                    teammates = [p for p in df_stats[df_stats['team']==sel_team]['name'].unique() if p != sel_player]
+                    rows = []
+                    for teammate in teammates:
+                        tm_data = recent[recent['name']==teammate]
+                        if len(tm_data)==0: continue
+
+                        avg_2026_data = df_stats[
+                            (df_stats['name']==teammate) & (df_stats['season']==2026) & (df_stats['tog_pct']>=0.45)
+                        ]
+                        avg_2026 = round(float(avg_2026_data['fantasy_score'].mean()),1) if len(avg_2026_data)>=3 else None
+
+                        with_scores    = [r['fantasy_score'] for _,r in tm_data.iterrows()
+                                          if (r['season'],r['round']) not in out_rounds]
+                        without_scores = [r['fantasy_score'] for _,r in tm_data.iterrows()
+                                          if (r['season'],r['round']) in out_rounds]
+                        n_out      = len(without_scores)
+                        sufficient = n_out >= 3
+
+                        if sufficient and with_scores:
+                            avg_with    = round(float(np.mean(with_scores)),1)
+                            avg_without = round(float(np.mean(without_scores)),1)
+                            diff        = round(avg_without - avg_with, 1)
+                            diff_pct    = round((diff/avg_with)*100,1) if avg_with>0 else None
+                            flag        = '✅' if diff_pct and diff_pct>3 else ('🔴' if diff_pct and diff_pct<-3 else '⚪')
+                        else:
+                            avg_with=avg_without=diff=diff_pct=None
+                            flag='—'
+
+                        pos = df_stats[df_stats['name']==teammate]['position'].iloc[-1] if len(df_stats[df_stats['name']==teammate]) else 'MID'
+                        rows.append({
+                            'Player':      teammate,
+                            'Pos':         pos.split('/')[0],
+                            '2026 avg':    avg_2026 if avg_2026 is not None else '—',
+                            'With avg':    avg_with if avg_with is not None else '—',
+                            'Without avg': avg_without if avg_without is not None else '—',
+                            'Diff':        (f"{'+' if diff and diff>=0 else ''}{diff} ({'+' if diff_pct and diff_pct>=0 else ''}{diff_pct}%)"
+                                           if diff is not None else 'insufficient data'),
+                            'Games out':   n_out,
+                            '':            flag,
+                            '_sort':       avg_2026 if avg_2026 is not None else 0,
+                            '_suf':        sufficient,
+                        })
+
+                    df_ww = pd.DataFrame(rows)
+                    df_ww = df_ww.sort_values(['_suf','_sort'], ascending=[False,False])
+                    df_ww = df_ww.drop(columns=['_sort','_suf']).reset_index(drop=True)
+                    st.dataframe(df_ww, use_container_width=True, hide_index=True, height=600)
+                    st.caption("✅ boosted >3% · ⚪ neutral · 🔴 down >3% · 'insufficient data' = fewer than 3 out rounds")
 
     # ══════════════════════════════════════════════════════════
     # ADD ROUND DATA PAGE
