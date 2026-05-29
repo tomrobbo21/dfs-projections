@@ -1621,11 +1621,11 @@ def main():
                         rows.append({
                             'Player':      teammate,
                             'Pos':         pos.split('/')[0],
-                            '2026 avg':    avg_2026 if avg_2026 is not None else '—',
-                            'With avg':    avg_with if avg_with is not None else '—',
-                            'Without avg': avg_without if avg_without is not None else '—',
-                            'Diff':        (f"{'+' if diff and diff>=0 else ''}{diff} ({'+' if diff_pct and diff_pct>=0 else ''}{diff_pct}%)"
-                                           if diff is not None else 'insufficient data'),
+                            '2026 avg':    avg_2026 if avg_2026 is not None else None,
+                            'With avg':    avg_with if avg_with is not None else None,
+                            'Without avg': avg_without if avg_without is not None else None,
+                            'Diff':        diff if diff is not None else None,
+                            'Diff %':      diff_pct if diff_pct is not None else None,
                             'Games out':   n_out,
                             '':            flag,
                             '_sort':       avg_2026 if avg_2026 is not None else 0,
@@ -1635,8 +1635,20 @@ def main():
                     df_ww = pd.DataFrame(rows)
                     df_ww = df_ww.sort_values(['_suf','_sort'], ascending=[False,False])
                     df_ww = df_ww.drop(columns=['_sort','_suf']).reset_index(drop=True)
-                    st.dataframe(df_ww, use_container_width=True, hide_index=True, height=600)
-                    st.caption("✅ boosted >3% · ⚪ neutral · 🔴 down >3% · 'insufficient data' = fewer than 3 out rounds")
+                    st.dataframe(
+                        df_ww,
+                        use_container_width=True,
+                        hide_index=True,
+                        height=600,
+                        column_config={
+                            '2026 avg':    st.column_config.NumberColumn('2026 avg', format="%.1f"),
+                            'With avg':    st.column_config.NumberColumn('With avg', format="%.1f"),
+                            'Without avg': st.column_config.NumberColumn('Without avg', format="%.1f"),
+                            'Diff':        st.column_config.NumberColumn('Diff', format="%.1f"),
+                            'Diff %':      st.column_config.NumberColumn('Diff %', format="%.1f%%"),
+                        }
+                    )
+                    st.caption("✅ boosted >3% · ⚪ neutral · 🔴 down >3% · blank = fewer than 3 out rounds")
 
     # ══════════════════════════════════════════════════════════
     # ADD ROUND DATA PAGE
