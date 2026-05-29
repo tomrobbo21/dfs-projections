@@ -851,6 +851,7 @@ def calc_with_without(df_stats, missing_player, missing_team, named_players_df):
     for _, tm_row in named_players_df.iterrows():
         teammate = tm_row['ds_name']
         if teammate == missing_player: continue
+        if tm_row['team'] != missing_team: continue
 
         tm_data = recent[recent['name'] == teammate]
         if len(tm_data) == 0: continue
