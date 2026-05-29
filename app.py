@@ -1275,7 +1275,6 @@ def main():
                             df_s, mp_name, mp_team,
                             st.session_state.ds_players
                         )
-                        )
 
                         if ww_df.empty:
                             st.caption("No named teammates found in slate.")
