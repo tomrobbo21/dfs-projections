@@ -1269,9 +1269,11 @@ def main():
                         st.markdown(f"**{mp_name}** is OUT · {mp_team} · 2026 avg {mp_avg}")
 
                         # Calculate with/without for named teammates
+                        st.write(f"DEBUG: mp_name={mp_name}, mp_team={mp_team}")
                         ww_df = calc_with_without(
                             df_s, mp_name, mp_team,
                             st.session_state.ds_players
+                        )
                         )
 
                         if ww_df.empty:
