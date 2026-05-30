@@ -354,9 +354,8 @@ def parse_draftstars_csv(file_bytes):
 
     out_players = []
     if status_col and status_col in df.columns:
-        active_statuses = ['NAMED IN TEAM TO PLAY', 'CONFIRMED IN TEAM TO PLAY']
         active = df[
-            df[status_col].str.upper().str.strip().isin(active_statuses)
+            df[status_col].str.upper().str.strip().str.contains('NAMED IN TEAM TO PLAY|CONFIRMED IN TEAM TO PLAY', na=False)
         ][name_col].unique().tolist()
 
         out_df = df[df[status_col].str.upper().str.strip() == 'OUT']
