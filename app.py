@@ -938,9 +938,6 @@ def main():
         ('slate_name',         ''),
         ('saved_slates',       {}),
         ('round_label',        ''),
-        ('mostx_stat_label',   'Fantasy Points'),
-        ('mostx_players',      []),
-        ('mostx_n_sims',       50_000),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -1711,16 +1708,16 @@ def main():
             stat_label = st.selectbox(
                 "Stat",
                 list(MOST_STATS.keys()),
-                index=list(MOST_STATS.keys()).index(st.session_state.mostx_stat_label)
-                      if st.session_state.mostx_stat_label in MOST_STATS else 0,
+                index=list(MOST_STATS.keys()).index(st.session_state.get('mostx_stat_label', 'Fantasy Points'))
+                      if st.session_state.get('mostx_stat_label') in MOST_STATS else 0,
                 key='mostx_stat_label',
             )
         with col_sim:
             n_sims = st.selectbox(
                 "Simulations",
                 [10_000, 50_000, 100_000],
-                index=[10_000, 50_000, 100_000].index(st.session_state.mostx_n_sims)
-                      if st.session_state.mostx_n_sims in [10_000, 50_000, 100_000] else 1,
+                index=[10_000, 50_000, 100_000].index(st.session_state.get('mostx_n_sims', 50_000))
+                      if st.session_state.get('mostx_n_sims') in [10_000, 50_000, 100_000] else 1,
                 help="More sims = more accurate probabilities, slightly slower",
                 key='mostx_n_sims',
             )
@@ -1736,10 +1733,10 @@ def main():
         else:
             default_pool = sorted(projected_names)
 
-        # Restore saved selection, filtering out any names no longer in the pool
-        saved_selection = [p for p in st.session_state.mostx_players if p in default_pool]
-        if saved_selection != st.session_state.mostx_players:
-            st.session_state.mostx_players = saved_selection
+        # Filter any stale saved players that are no longer in the pool
+        current_selection = st.session_state.get('mostx_players', [])
+        if any(p not in default_pool for p in current_selection):
+            st.session_state['mostx_players'] = [p for p in current_selection if p in default_pool]
 
         st.markdown("**Select players in the group** (2–8 players)")
         selected_players = st.multiselect(
@@ -1883,7 +1880,7 @@ def main():
             with bookie_cols[i]:
                 val = st.number_input(
                     p['name'].split()[-1],  # surname only to save space
-                    min_value=1.01, max_value=1000.0, value=None,
+                    min_value=1.01, max_value=50.0, value=None,
                     step=0.05, format="%.2f",
                     key=f"odds_{p['name']}_{stat_key}",
                     label_visibility="visible",
