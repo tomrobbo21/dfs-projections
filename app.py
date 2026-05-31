@@ -1738,16 +1738,17 @@ def main():
 
         # Restore saved selection, filtering out any names no longer in the pool
         saved_selection = [p for p in st.session_state.mostx_players if p in default_pool]
+        if saved_selection != st.session_state.mostx_players:
+            st.session_state.mostx_players = saved_selection
 
         st.markdown("**Select players in the group** (2–8 players)")
         selected_players = st.multiselect(
             "Players",
             options=default_pool,
-            default=saved_selection,
+            key='mostx_players',
             label_visibility="collapsed",
             placeholder="Type to search players…",
         )
-        st.session_state.mostx_players = selected_players
 
         if len(selected_players) < 2:
             st.info("Select at least 2 players to model the market.")
