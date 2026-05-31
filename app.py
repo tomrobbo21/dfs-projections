@@ -1684,13 +1684,14 @@ def main():
 
         # ── Stat selector ──────────────────────────────────────
         MOST_STATS = {
-            'Disposals':  'disposals',
-            'Kicks':      'kicks',
-            'Handballs':  'handballs',
-            'Marks':      'marks',
-            'Tackles':    'tackles',
-            'Hit Outs':   'hit_outs',
-            'Goals':      'goals',
+            'Fantasy Points': 'fantasy_score',
+            'Disposals':      'disposals',
+            'Kicks':          'kicks',
+            'Handballs':      'handballs',
+            'Marks':          'marks',
+            'Tackles':        'tackles',
+            'Hit Outs':       'hit_outs',
+            'Goals':          'goals',
         }
 
         col_stat, col_sim = st.columns([2, 1])
@@ -1758,6 +1759,45 @@ def main():
             proj_val = std_val = floor_val = ceil_val = avg_5 = avg_20 = None
             games_n  = 0
 
+            # Fantasy Points — uses project_player() which has the full model
+            if stat_key == 'fantasy_score':
+                fp_proj = None
+                if fix and pt in team_fix:
+                    fp_proj = projector.project_player(
+                        pname, opponent, venue, is_home,
+                        weather=weather,
+                        injury_override=injury_map.get(pname),
+                        tog_override=tog_map.get(pname),
+                        factor_weights=factor_weights,
+                        position=None, team=None,
+                        manual_base_scores=st.session_state.get('manual_scores', {}),
+                    )
+                if fp_proj:
+                    proj_val  = fp_proj['projection']
+                    std_val   = float(fp_proj['variance'] / 100 * proj_val) if fp_proj['variance'] else proj_val * 0.25
+                    # variance is stored as CV*100, so std = (variance/100)*proj
+                    std_val   = float(df_stats[df_stats['name'] == pname]['fantasy_score'].tail(10).std() or proj_val * 0.25)
+                    floor_val = fp_proj['floor']
+                    ceil_val  = fp_proj['ceiling']
+                    pd_tog    = pd_p[pd_p['tog_pct'] >= 0.45]
+                    r5_fs     = pd_tog['fantasy_score'].tail(5)
+                    r20_fs    = pd_tog['fantasy_score'].tail(20)
+                    avg_5     = round(float(r5_fs.mean()), 1) if len(r5_fs) else None
+                    avg_20    = round(float(wavg(r20_fs.values)), 1) if len(r20_fs) else None
+                    games_n   = min(20, len(pd_tog))
+                else:
+                    # Fallback: raw fantasy_score stats
+                    pd_tog = pd_p[pd_p['tog_pct'] >= 0.45].copy()
+                    if len(pd_tog) >= 3:
+                        r20_fs  = pd_tog['fantasy_score'].tail(20).values
+                        r5_fs   = pd_tog['fantasy_score'].tail(5).values
+                        proj_val  = round(float(np.median(winsorise(r20_fs))), 1)
+                        std_val   = float(pd_tog['fantasy_score'].tail(10).std() or proj_val * 0.25)
+                        floor_val = round(max(0, proj_val - 1.5 * std_val), 1)
+                        ceil_val  = round(proj_val + 1.5 * std_val, 1)
+                        avg_5     = round(float(r5_fs.mean()), 1)
+                        avg_20    = round(float(wavg(r20_fs)), 1)
+                        games_n   = len(r20_fs)
             # Goals uses simple mean/std (not in project_stat)
             if stat_key == 'goals':
                 pd_tog = pd_p[pd_p['tog_pct'] >= 0.45].copy()
@@ -1887,7 +1927,7 @@ def main():
             with bookie_cols[i]:
                 val = st.number_input(
                     p['name'].split()[-1],  # surname only to save space
-                    min_value=1.01, max_value=1000.0, value=None,
+                    min_value=1.01, max_value=50.0, value=None,
                     step=0.05, format="%.2f",
                     key=f"odds_{p['name']}_{stat_key}",
                     label_visibility="visible",
@@ -2002,6 +2042,7 @@ def main():
         st.caption(
             f"Win % calculated via {n_sims:,}-simulation Monte Carlo. "
             f"{'Poisson distribution (discrete count)' if stat_key == 'goals' else 'Truncated normal distribution'}. "
+            f"{'Fantasy Points projection uses full model (form, trend, opponent, venue, weather, TOG).' if stat_key == 'fantasy_score' else ''} "
             "Fair Odds = 1 / Win%. Edge = (Bookie ÷ Fair − 1) × 100. "
             "✅ VALUE = edge ≥ 5% · ⚠️ marginal = 1–5% · ❌ overpriced = negative edge."
         )
