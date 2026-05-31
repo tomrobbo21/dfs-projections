@@ -1883,7 +1883,7 @@ def main():
             with bookie_cols[i]:
                 val = st.number_input(
                     p['name'].split()[-1],  # surname only to save space
-                    min_value=1.01, max_value=50.0, value=None,
+                    min_value=1.01, max_value=1000.0, value=None,
                     step=0.05, format="%.2f",
                     key=f"odds_{p['name']}_{stat_key}",
                     label_visibility="visible",
