@@ -1670,28 +1670,37 @@ def main():
             st.warning("No player stats loaded. Run **Add Round Data** first.")
             st.stop()
 
-        # ── Fixtures needed for opponent/venue/weather ─────────
-        fixtures = st.session_state.get('fixtures', [])
-        weather_map = st.session_state.get('weather_map', {})
-        injury_map  = st.session_state.get('injury_map', {})
-        tog_map     = st.session_state.get('tog_map', {})
-        factor_weights = st.session_state.get('factor_weights', {})
+        # ── Require projections to be run first ───────────────
+        df_proj     = st.session_state.get('df_proj')
+        df_stat_proj = st.session_state.get('df_stat_proj')
 
-        team_fix = {}
-        for f in fixtures:
-            team_fix[f['home_team']] = {'opponent': f['away_team'], 'venue': f['venue'], 'is_home': True}
-            team_fix[f['away_team']] = {'opponent': f['home_team'], 'venue': f['venue'], 'is_home': False}
+        if df_proj is None or (isinstance(df_proj, pd.DataFrame) and df_proj.empty):
+            st.warning("⚠️ No projections found. Run projections or load a saved slate on the **📊 Projections** page first.")
+            st.stop()
+
+        if df_stat_proj is None or (isinstance(df_stat_proj, pd.DataFrame) and df_stat_proj.empty):
+            st.warning("⚠️ No stat projections found. Run projections or load a saved slate on the **📊 Projections** page first.")
+            st.stop()
+
+        # Index both by player name for fast lookup
+        fp_lookup   = df_proj.set_index('player')        # fantasy points
+        stat_lookup = df_stat_proj.set_index('player')   # all other stats
 
         # ── Stat selector ──────────────────────────────────────
+        # Stat key → (df_stat prefix, std raw column in df_stats)
         MOST_STATS = {
-            'Fantasy Points': 'fantasy_score',
-            'Disposals':      'disposals',
-            'Kicks':          'kicks',
-            'Handballs':      'handballs',
-            'Marks':          'marks',
-            'Tackles':        'tackles',
-            'Hit Outs':       'hit_outs',
-            'Goals':          'goals',
+            'Fantasy Points': ('fantasy_score', None),
+            'Disposals':      ('disposals',     'kicks'),   # std derived below
+            'Kicks':          ('kicks',          'kicks'),
+            'Handballs':      ('handballs',      'handballs'),
+            'Marks':          ('marks',          'marks'),
+            'Tackles':        ('tackles',        'tackles'),
+            'Hit Outs':       ('hit_outs',       'hit_outs'),
+        }
+
+        STAT_PREFIX = {
+            'disposals': 'disp', 'kicks': 'kick', 'handballs': 'hb',
+            'marks': 'mark', 'tackles': 'tackle', 'hit_outs': 'ho',
         }
 
         col_stat, col_sim = st.columns([2, 1])
@@ -1701,17 +1710,16 @@ def main():
             n_sims = st.selectbox("Simulations", [10_000, 50_000, 100_000], index=1,
                                   help="More sims = more accurate probabilities, slightly slower")
 
-        stat_key = MOST_STATS[stat_label]
+        stat_key, std_raw_col = MOST_STATS[stat_label]
 
         # ── Player selector ────────────────────────────────────
-        all_names = sorted(df_stats['name'].unique().tolist())
-        # Prefer players in the current slate if loaded
+        # Only show players that exist in the projection output
+        projected_names = set(fp_lookup.index.tolist())
         ds_players = st.session_state.get('ds_players')
         if ds_players is not None and not ds_players.empty and 'ds_name' in ds_players.columns:
-            slate_names = sorted(ds_players['ds_name'].tolist())
-            default_pool = slate_names
+            default_pool = sorted([n for n in ds_players['ds_name'].tolist() if n in projected_names])
         else:
-            default_pool = all_names
+            default_pool = sorted(projected_names)
 
         st.markdown("**Select players in the group** (2–8 players)")
         selected_players = st.multiselect(
@@ -1720,15 +1728,6 @@ def main():
             label_visibility="collapsed",
             placeholder="Type to search players…",
         )
-
-        # Allow searching outside slate
-        if ds_players is not None and not ds_players.empty:
-            extra = st.multiselect(
-                "Add players not in slate",
-                options=[n for n in all_names if n not in default_pool],
-                label_visibility="visible",
-            )
-            selected_players = selected_players + extra
 
         if len(selected_players) < 2:
             st.info("Select at least 2 players to model the market.")
@@ -1740,142 +1739,78 @@ def main():
 
         st.markdown("---")
 
-        # ── Build per-player projections ───────────────────────
-        projector        = AFLFantasyProjector(df_stats)
-        opp_stat_ratings = build_opp_stat_ratings(df_stats)
-
-        player_data = []  # list of dicts: name, proj, std, floor, ceiling, games_n
+        # ── Build per-player data from session state projections ─
+        player_data = []
 
         for pname in selected_players:
-            pd_p = df_stats[df_stats['name'] == pname]
-            pt   = pd_p['team'].iloc[-1] if len(pd_p) else None
-            fix  = team_fix.get(pt, {})
-
-            opponent   = fix.get('opponent', 'Unknown')
-            venue      = fix.get('venue', 'Unknown')
-            is_home    = fix.get('is_home', False)
-            weather    = weather_map.get(venue, 'fine')
-
             proj_val = std_val = floor_val = ceil_val = avg_5 = avg_20 = None
             games_n  = 0
+            team     = '—'
+            opponent = '—'
 
-            # Fantasy Points — uses project_player() which has the full model
+            # Team / opponent from df_proj
+            if pname in fp_lookup.index:
+                fp_row   = fp_lookup.loc[pname]
+                team     = fp_row.get('team', '—')
+                opponent = fp_row.get('opponent', '—')
+
             if stat_key == 'fantasy_score':
-                fp_proj = None
-                if fix and pt in team_fix:
-                    fp_proj = projector.project_player(
-                        pname, opponent, venue, is_home,
-                        weather=weather,
-                        injury_override=injury_map.get(pname),
-                        tog_override=tog_map.get(pname),
-                        factor_weights=factor_weights,
-                        position=None, team=None,
-                        manual_base_scores=st.session_state.get('manual_scores', {}),
-                    )
-                if fp_proj:
-                    proj_val  = fp_proj['projection']
-                    std_val   = float(fp_proj['variance'] / 100 * proj_val) if fp_proj['variance'] else proj_val * 0.25
-                    # variance is stored as CV*100, so std = (variance/100)*proj
-                    std_val   = float(df_stats[df_stats['name'] == pname]['fantasy_score'].tail(10).std() or proj_val * 0.25)
-                    floor_val = fp_proj['floor']
-                    ceil_val  = fp_proj['ceiling']
-                    pd_tog    = pd_p[pd_p['tog_pct'] >= 0.45]
-                    r5_fs     = pd_tog['fantasy_score'].tail(5)
-                    r20_fs    = pd_tog['fantasy_score'].tail(20)
-                    avg_5     = round(float(r5_fs.mean()), 1) if len(r5_fs) else None
-                    avg_20    = round(float(wavg(r20_fs.values)), 1) if len(r20_fs) else None
-                    games_n   = min(20, len(pd_tog))
-                else:
-                    # Fallback: raw fantasy_score stats
-                    pd_tog = pd_p[pd_p['tog_pct'] >= 0.45].copy()
-                    if len(pd_tog) >= 3:
-                        r20_fs  = pd_tog['fantasy_score'].tail(20).values
-                        r5_fs   = pd_tog['fantasy_score'].tail(5).values
-                        proj_val  = round(float(np.median(winsorise(r20_fs))), 1)
-                        std_val   = float(pd_tog['fantasy_score'].tail(10).std() or proj_val * 0.25)
-                        floor_val = round(max(0, proj_val - 1.5 * std_val), 1)
-                        ceil_val  = round(proj_val + 1.5 * std_val, 1)
-                        avg_5     = round(float(r5_fs.mean()), 1)
-                        avg_20    = round(float(wavg(r20_fs)), 1)
-                        games_n   = len(r20_fs)
-            # Goals uses simple mean/std (not in project_stat)
-            if stat_key == 'goals':
-                pd_tog = pd_p[pd_p['tog_pct'] >= 0.45].copy()
-                if len(pd_tog) >= 3:
-                    r20    = pd_tog['goals'].tail(20).values
-                    r5     = pd_tog['goals'].tail(5).values
-                    base   = wavg(r20)
-                    med_raw = float(np.median(winsorise(r20)))
-                    form_f = float(np.clip(r5.mean() / base, 0.80, 1.20)) if base > 0 else 1.0
-                    tf     = calc_trend(r20)
-                    wmap_g = {'fine': 1.00, 'light_rain': 0.95, 'heavy_rain': 0.88, 'wind': 0.93}
-                    wf     = wmap_g.get(weather, 1.00)
-                    adj_form = 0.60 + 0.40 * (1.0 + (form_f - 1.0) * factor_weights.get('form', 1.0))
-                    adj_tr   = 0.80 + 0.20 * (1.0 + (tf     - 1.0) * factor_weights.get('trend', 1.0))
-                    adj_wf   = 1.0 + (wf - 1.0) * factor_weights.get('weather', 1.0)
-                    proj_val  = round(max(0, med_raw * adj_form * adj_tr * adj_wf), 2)
-                    std_val   = float(pd_tog['goals'].tail(10).std() or proj_val * 0.50)
-                    floor_val = round(max(0, proj_val - 1.5 * std_val), 1)
-                    ceil_val  = round(proj_val + 1.5 * std_val, 1)
-                    avg_5     = round(float(r5.mean()), 1)
-                    avg_20    = round(float(base), 1)
-                    games_n   = len(r20)
+                if pname in fp_lookup.index:
+                    fp_row    = fp_lookup.loc[pname]
+                    proj_val  = float(fp_row['projection'])
+                    floor_val = float(fp_row['floor'])
+                    ceil_val  = float(fp_row['ceiling'])
+                    avg_5     = float(fp_row['form_5_avg']) if fp_row.get('form_5_avg') is not None else None
+                    avg_20    = float(fp_row['base_avg'])
+                    # std from raw history (tail 10)
+                    pd_tog   = df_stats[
+                        (df_stats['name'] == pname) & (df_stats['tog_pct'] >= 0.45)
+                    ]
+                    std_val  = float(pd_tog['fantasy_score'].tail(10).std() or proj_val * 0.25)
+                    games_n  = min(20, len(pd_tog))
             else:
-                if fix and pt in team_fix:
-                    stat_proj = projector.project_stat(
-                        pname, opponent, is_home, weather,
-                        injury_override=injury_map.get(pname),
-                        tog_override=tog_map.get(pname),
-                        factor_weights=factor_weights,
-                        opp_stat_ratings=opp_stat_ratings,
-                    )
-                    if stat_proj and stat_key in stat_proj:
-                        d         = stat_proj[stat_key]
-                        proj_val  = d['proj']
-                        std_val   = d['std']
-                        floor_val = d['floor']
-                        ceil_val  = d['ceiling']
-                        avg_5     = d['avg_5']
-                        avg_20    = d['avg_20']
-                        pd_tog    = pd_p[pd_p['tog_pct'] >= 0.45]
-                        games_n   = min(20, len(pd_tog))
-
-                # Fallback: use raw stats if no fixture context
-                if proj_val is None:
-                    pd_tog = pd_p[pd_p['tog_pct'] >= 0.45].copy()
-                    if stat_key in pd_tog.columns and len(pd_tog) >= 3:
-                        r20      = pd_tog[stat_key].tail(20).values
-                        r5_vals  = pd_tog[stat_key].tail(5).values
-                        proj_val = round(float(np.median(winsorise(r20))), 1)
-                        std_val  = float(pd_tog[stat_key].tail(10).std() or proj_val * 0.30)
-                        floor_val = round(max(0, proj_val - 1.5 * std_val), 1)
-                        ceil_val  = round(proj_val + 1.5 * std_val, 1)
-                        avg_5    = round(float(r5_vals.mean()), 1)
-                        avg_20   = round(float(wavg(r20)), 1)
-                        games_n  = len(r20)
+                prefix = STAT_PREFIX[stat_key]
+                if pname in stat_lookup.index:
+                    sr       = stat_lookup.loc[pname]
+                    proj_val  = float(sr[f'{prefix}_proj'])
+                    floor_val = float(sr[f'{prefix}_floor'])
+                    ceil_val  = float(sr[f'{prefix}_ceiling'])
+                    avg_5     = float(sr[f'{prefix}_avg_5'])
+                    avg_20    = float(sr[f'{prefix}_avg_20'])
+                    # std from raw history
+                    raw_col  = 'kicks' if stat_key == 'disposals' else stat_key
+                    pd_tog   = df_stats[
+                        (df_stats['name'] == pname) & (df_stats['tog_pct'] >= 0.45)
+                    ]
+                    if stat_key == 'disposals':
+                        k_std = float(pd_tog['kicks'].tail(10).std() or 0)
+                        h_std = float(pd_tog['handballs'].tail(10).std() or 0)
+                        std_val = float(np.sqrt(k_std**2 + h_std**2)) or proj_val * 0.25
+                    else:
+                        std_val = float(pd_tog[stat_key].tail(10).std() or proj_val * 0.25)
+                    games_n = min(20, len(pd_tog))
 
             player_data.append({
-                'name':    pname,
-                'team':    pt or '—',
-                'proj':    proj_val,
-                'std':     std_val,
-                'floor':   floor_val,
-                'ceiling': ceil_val,
-                'avg_5':   avg_5,
-                'avg_20':  avg_20,
-                'games_n': games_n,
+                'name':     pname,
+                'team':     team,
                 'opponent': opponent,
-                'no_data': proj_val is None,
+                'proj':     proj_val,
+                'std':      std_val,
+                'floor':    floor_val,
+                'ceiling':  ceil_val,
+                'avg_5':    avg_5,
+                'avg_20':   avg_20,
+                'games_n':  games_n,
+                'no_data':  proj_val is None,
             })
 
-        # Warn about missing projections
         missing = [p['name'] for p in player_data if p['no_data']]
         if missing:
-            st.warning(f"No stat data found for: {', '.join(missing)}. They'll be excluded from simulation.")
+            st.warning(f"No projection data found for: {', '.join(missing)}. They'll be excluded from simulation.")
         valid = [p for p in player_data if not p['no_data']]
 
         if len(valid) < 2:
-            st.error("Need at least 2 players with data to run simulation.")
+            st.error("Need at least 2 players with projection data to run simulation.")
             st.stop()
 
         # ── Monte Carlo simulation ─────────────────────────────
