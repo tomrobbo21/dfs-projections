@@ -938,6 +938,9 @@ def main():
         ('slate_name',         ''),
         ('saved_slates',       {}),
         ('round_label',        ''),
+        ('mostx_stat_label',   'Fantasy Points'),
+        ('mostx_players',      []),
+        ('mostx_n_sims',       50_000),
     ]:
         if key not in st.session_state:
             st.session_state[key] = default
@@ -1705,10 +1708,22 @@ def main():
 
         col_stat, col_sim = st.columns([2, 1])
         with col_stat:
-            stat_label = st.selectbox("Stat", list(MOST_STATS.keys()))
+            stat_label = st.selectbox(
+                "Stat",
+                list(MOST_STATS.keys()),
+                index=list(MOST_STATS.keys()).index(st.session_state.mostx_stat_label)
+                      if st.session_state.mostx_stat_label in MOST_STATS else 0,
+                key='mostx_stat_label',
+            )
         with col_sim:
-            n_sims = st.selectbox("Simulations", [10_000, 50_000, 100_000], index=1,
-                                  help="More sims = more accurate probabilities, slightly slower")
+            n_sims = st.selectbox(
+                "Simulations",
+                [10_000, 50_000, 100_000],
+                index=[10_000, 50_000, 100_000].index(st.session_state.mostx_n_sims)
+                      if st.session_state.mostx_n_sims in [10_000, 50_000, 100_000] else 1,
+                help="More sims = more accurate probabilities, slightly slower",
+                key='mostx_n_sims',
+            )
 
         stat_key, std_raw_col = MOST_STATS[stat_label]
 
@@ -1721,13 +1736,18 @@ def main():
         else:
             default_pool = sorted(projected_names)
 
+        # Restore saved selection, filtering out any names no longer in the pool
+        saved_selection = [p for p in st.session_state.mostx_players if p in default_pool]
+
         st.markdown("**Select players in the group** (2–8 players)")
         selected_players = st.multiselect(
             "Players",
             options=default_pool,
+            default=saved_selection,
             label_visibility="collapsed",
             placeholder="Type to search players…",
         )
+        st.session_state.mostx_players = selected_players
 
         if len(selected_players) < 2:
             st.info("Select at least 2 players to model the market.")
