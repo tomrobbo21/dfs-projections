@@ -1559,7 +1559,20 @@ def main():
             sel_player = st.selectbox("Select missing player", team_players, key="ww_player")
 
             if sel_player:
-                recent_2s = sorted(df_stats['season'].unique())[-2:]
+                available_seasons = sorted(df_stats['season'].unique(), reverse=True)
+                season_options = {
+                    '2026 only':       [2026],
+                    'Last 2 seasons':  sorted(available_seasons)[-2:],
+                    'Last 3 seasons':  sorted(available_seasons)[-3:],
+                    'All seasons':     sorted(available_seasons),
+                }
+                sel_season_range = st.selectbox(
+                    "Season range",
+                    list(season_options.keys()),
+                    index=1,
+                    key="ww_season_range"
+                )
+                recent_2s = season_options[sel_season_range]
 
                 # Out rounds
                 team_rounds = set(zip(
