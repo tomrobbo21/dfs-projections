@@ -2047,18 +2047,27 @@ def main():
                 is_home_lookup = {}
                 if fix_resp.data:
                     for row in fix_resp.data:
-                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
-                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
+                        rnd   = str(row.get('Round Number',''))
+                        yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
+                        # Date-based lookup
                         try:
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
+                            venue_lookup[(home, away, game_date)] = venue
+                            venue_lookup[(away, home, game_date)] = venue
+                            is_home_lookup[(home, away, game_date)] = True
+                            is_home_lookup[(away, home, game_date)] = False
                         except:
-                            continue
-                        venue_lookup[(home, away, game_date)] = venue
-                        venue_lookup[(away, home, game_date)] = venue
-                        is_home_lookup[(home, away, game_date)] = True
-                        is_home_lookup[(away, home, game_date)] = False
+                            pass
+                        # Round-based fallback lookup
+                        if rnd and yr:
+                            venue_lookup[(home, away, rnd, yr)]  = venue
+                            venue_lookup[(away, home, rnd, yr)]  = venue
+                            is_home_lookup[(home, away, rnd, yr)] = True
+                            is_home_lookup[(away, home, rnd, yr)] = False
 
             log_area  = st.empty()
             log_lines = []
