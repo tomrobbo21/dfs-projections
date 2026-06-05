@@ -415,13 +415,21 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                         except: pass
                         break
                 venue = 'Unknown'; is_home = False
+                t = DS_TEAM_MAP.get(team, team)
                 if game_date:
-                    t = DS_TEAM_MAP.get(team, team)
                     venue = (venue_lookup.get((t, opponent, game_date)) or
                              venue_lookup.get((opponent, t, game_date)) or 'Unknown')
                     if is_home_lookup:
                         is_home = (is_home_lookup.get((t, opponent, game_date)) or
                                    is_home_lookup.get((opponent, t, game_date)) or False)
+                # Fallback: match by round + season
+                if venue == 'Unknown' and isinstance(round_num, (int, str)):
+                    rnd_str = str(round_num)
+                    venue = (venue_lookup.get((t, opponent, rnd_str, season_int)) or
+                             venue_lookup.get((opponent, t, rnd_str, season_int)) or 'Unknown')
+                    if venue != 'Unknown' and is_home_lookup:
+                        is_home = (is_home_lookup.get((t, opponent, rnd_str, season_int)) or
+                                   is_home_lookup.get((opponent, t, rnd_str, season_int)) or False)
                 def gi(i):
                     if i >= len(cells) or not cells[i].strip(): return 0
                     try: return max(0, int(float(cells[i].strip())))
