@@ -811,7 +811,9 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
             position=pos, team=team,
             manual_base_scores=manual_base_scores,
         )
-        if r: rows.append(r)
+        if r:
+            r['projection_score'] = r['projection']  # preserve score-based projection
+            rows.append(r)
 
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
@@ -877,11 +879,18 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
         def update_proj(row):
             p = row['player']
             if p in impl and impl[p] > 0:
-                orig = row['projection'] if row['projection'] > 0 else 1.0
+                orig = row['projection_score'] if row.get('projection_score', 0) > 0 else 1.0
                 scale = impl[p] / orig
-                row['projection'] = round(impl[p], 1)
-                row['floor']      = round(row['floor']   * scale, 1)
-                row['ceiling']    = round(row['ceiling'] * scale, 1)
+                row['projection_stat'] = round(impl[p], 1)
+                row['floor_stat']      = round(row['floor']   * scale, 1)
+                row['ceiling_stat']    = round(row['ceiling'] * scale, 1)
+                row['projection']      = round(impl[p], 1)  # default to stat-driven
+                row['floor']           = row['floor_stat']
+                row['ceiling']         = row['ceiling_stat']
+            else:
+                row['projection_stat'] = row['projection']
+                row['floor_stat']      = row['floor']
+                row['ceiling_stat']    = row['ceiling']
             return row
         df_proj = df_proj.apply(update_proj, axis=1)
         df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
@@ -1455,6 +1464,25 @@ def main():
 
         df = st.session_state.df_proj.copy()
 
+        # Method toggle
+        method = st.radio(
+            "Projection method",
+            ["Proj (stats)", "Proj (score)"],
+            horizontal=True,
+            key="proj_method_toggle"
+        )
+        if method == "Proj (score)" and 'projection_score' in df.columns:
+            df['projection'] = df['projection_score']
+            df['floor']      = df.get('floor', df['floor'])
+            df['ceiling']    = df.get('ceiling', df['ceiling'])
+        elif method == "Proj (stats)" and 'projection_stat' in df.columns:
+            df['projection'] = df['projection_stat']
+            df['floor']      = df['floor_stat'] if 'floor_stat' in df.columns else df['floor']
+            df['ceiling']    = df['ceiling_stat'] if 'ceiling_stat' in df.columns else df['ceiling']
+
+        if 'salary' in df.columns and df['projection'].notna().any():
+            df['value'] = (df['projection'] / (df['salary'] / 1000)).round(2)
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             search = st.text_input("🔍 Search player", "")
@@ -1551,6 +1579,14 @@ def main():
             col2.metric("Floor / Ceiling", f"{r['floor']} – {r['ceiling']}")
             col3.metric("Confidence", f"{r['confidence']}%")
             col4.metric("Variance", f"{r['variance']}%")
+
+            # Show both projection methods side by side
+            if 'projection_score' in r and 'projection_stat' in r:
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.metric("Proj (stats)", r.get('projection_stat', '–'))
+                sc2.metric("Proj (score)", r.get('projection_score', '–'))
+                diff = round(float(r.get('projection_stat', 0)) - float(r.get('projection_score', 0)), 1)
+                sc3.metric("Difference", f"{'+' if diff >= 0 else ''}{diff}")
 
             if r.get('role_factor', 1.0) != 1.0:
                 boost_pct = round((r['role_factor'] - 1.0) * 100)
