@@ -813,20 +813,6 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
         )
         if r: rows.append(r)
 
-    # Replace projection with implied_fantasy from stat model where available
-    df_stat_temp = pd.DataFrame(stat_rows) if stat_rows else pd.DataFrame()
-    if not df_stat_temp.empty and 'implied_fantasy' in df_stat_temp.columns:
-        impl = df_stat_temp.set_index('player')['implied_fantasy'].to_dict()
-        for row in rows:
-            p = row['player']
-            if p in impl and impl[p] > 0:
-                orig = row['projection']
-                row['projection'] = impl[p]
-                # Scale floor/ceiling proportionally
-                scale = impl[p] / orig if orig > 0 else 1.0
-                row['floor']   = round(row['floor']   * scale, 1)
-                row['ceiling'] = round(row['ceiling'] * scale, 1)
-
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
 
@@ -881,8 +867,26 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
                     row.update(d['ou'])
                 stat_rows.append(row)
 
-    df_stat = pd.DataFrame(stat_rows).sort_values('disp_proj',ascending=False).reset_index(drop=True)
-    df_stat.index += 1
+    df_stat = pd.DataFrame(stat_rows).sort_values('disp_proj',ascending=False).reset_index(drop=True) if stat_rows else pd.DataFrame()
+    if not df_stat.empty:
+        df_stat.index += 1
+
+    # Replace fantasy projection with implied_fantasy from stat model
+    if not df_stat.empty and 'implied_fantasy' in df_stat.columns:
+        impl = df_stat.set_index('player')['implied_fantasy'].to_dict()
+        def update_proj(row):
+            p = row['player']
+            if p in impl and impl[p] > 0:
+                orig = row['projection'] if row['projection'] > 0 else 1.0
+                scale = impl[p] / orig
+                row['projection'] = round(impl[p], 1)
+                row['floor']      = round(row['floor']   * scale, 1)
+                row['ceiling']    = round(row['ceiling'] * scale, 1)
+            return row
+        df_proj = df_proj.apply(update_proj, axis=1)
+        df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
+        df_proj.index += 1
+
     return df_proj, df_stat
 
 
