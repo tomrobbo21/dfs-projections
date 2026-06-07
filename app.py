@@ -147,6 +147,8 @@ HANDBALL_LINES = list(range(4,  28, 2))
 MARK_LINES     = list(range(2,  14, 2))
 TACKLE_LINES   = list(range(2,  14, 2))
 HITOUT_LINES   = list(range(10, 45, 5))
+GOAL_LINES     = [0.5, 1.5, 2.5, 3.5, 4.5]
+BEHIND_LINES   = [0.5, 1.5, 2.5, 3.5]
 
 FACTOR_KEYS   = ['form', 'trend', 'opponent', 'venue', 'home_away', 'weather', 'tog']
 FACTOR_LABELS = ['Form (last 5)', 'Trend (20-game)', 'Opponent difficulty',
@@ -415,21 +417,13 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                         except: pass
                         break
                 venue = 'Unknown'; is_home = False
-                t = DS_TEAM_MAP.get(team, team)
                 if game_date:
+                    t = DS_TEAM_MAP.get(team, team)
                     venue = (venue_lookup.get((t, opponent, game_date)) or
                              venue_lookup.get((opponent, t, game_date)) or 'Unknown')
                     if is_home_lookup:
                         is_home = (is_home_lookup.get((t, opponent, game_date)) or
                                    is_home_lookup.get((opponent, t, game_date)) or False)
-                # Fallback: match by round + season
-                if venue == 'Unknown' and isinstance(round_num, (int, str)):
-                    rnd_str = str(round_num)
-                    venue = (venue_lookup.get((t, opponent, rnd_str, season_int)) or
-                             venue_lookup.get((opponent, t, rnd_str, season_int)) or 'Unknown')
-                    if venue != 'Unknown' and is_home_lookup:
-                        is_home = (is_home_lookup.get((t, opponent, rnd_str, season_int)) or
-                                   is_home_lookup.get((opponent, t, rnd_str, season_int)) or False)
                 def gi(i):
                     if i >= len(cells) or not cells[i].strip(): return 0
                     try: return max(0, int(float(cells[i].strip())))
@@ -660,60 +654,115 @@ class AFLFantasyProjector:
         kick_avg = wavg(r20['kicks'].values)
         hb_avg   = wavg(r20['handballs'].values)
 
+        SCORING_WEIGHTS = {
+            'kicks':3,'handballs':2,'marks':3,'tackles':4,
+            'goals':6,'behinds':1,'hit_outs':1,'frees_for':1,'frees_against':-3
+        }
+
         results = {}
+
+        # Project all stats using wavg as base
         for stat, lines in [
-            ('kicks',KICK_LINES),('handballs',HANDBALL_LINES),
-            ('marks',MARK_LINES),('tackles',TACKLE_LINES),('hit_outs',HITOUT_LINES),
+            ('kicks',        KICK_LINES),
+            ('handballs',    HANDBALL_LINES),
+            ('marks',        MARK_LINES),
+            ('tackles',      TACKLE_LINES),
+            ('hit_outs',     HITOUT_LINES),
+            ('goals',        GOAL_LINES),
+            ('behinds',      BEHIND_LINES),
+            ('frees_for',    []),
+            ('frees_against',[]),
         ]:
+            if stat not in r20.columns: continue
             base    = wavg(r20[stat].values)
-            med_raw = float(np.median(winsorise(r20[stat].values)))
-            avg5    = float(r5[stat].mean()); avg3 = float(r3[stat].mean())
-            form    = float(np.clip(avg5/base,0.80,1.20)) if base>0 else 1.0
+            med_raw = float(np.median(winsorise(r20[stat].values))) if len(r20[stat].values) >= 4 else base
+            avg5    = float(r5[stat].mean())
+            avg3    = float(r3[stat].mean())
+            form    = float(np.clip(avg5/base, 0.80, 1.20)) if base > 0 else 1.0
             tr      = calc_trend(r20[stat].values)
-            opp_f   = opp_stat_ratings.get(stat,{}).get(position,{}).get(opponent,1.0)
+            opp_f   = opp_stat_ratings.get(stat, {}).get(position, {}).get(opponent, 1.0)
 
-            total  = kick_avg+hb_avg
-            kr     = kick_avg/total if total>0 else 0.5
-            base_p = {'fine':0,'light_rain':0.04,'heavy_rain':0.10,'wind':0.06}.get(weather,0)
-            if stat=='kicks':      wf = round(1-base_p*(0.5+kr),4)
-            elif stat=='handballs':wf = round(1-max(base_p*(0.5-kr*0.5),-0.03),4)
-            elif stat=='marks':    wf = {'fine':1.00,'light_rain':0.96,'heavy_rain':0.90,'wind':0.94}.get(weather,1.0)
-            elif stat=='tackles':  wf = {'fine':1.00,'light_rain':1.02,'heavy_rain':1.04,'wind':1.01}.get(weather,1.0)
-            else:                  wf = 1.0
+            # Weather factors
+            total  = kick_avg + hb_avg
+            kr     = kick_avg / total if total > 0 else 0.5
+            base_p = {'fine':0,'light_rain':0.04,'heavy_rain':0.10,'wind':0.06}.get(weather, 0)
+            if stat == 'kicks':
+                wf = round(1 - base_p * (0.5 + kr), 4)
+            elif stat == 'handballs':
+                wf = round(1 - max(base_p * (0.5 - kr * 0.5), -0.03), 4)
+            elif stat == 'marks':
+                wf = {'fine':1.00,'light_rain':0.96,'heavy_rain':0.90,'wind':0.94}.get(weather, 1.0)
+            elif stat == 'tackles':
+                wf = {'fine':1.00,'light_rain':1.02,'heavy_rain':1.04,'wind':1.01}.get(weather, 1.0)
+            elif stat == 'goals':
+                wf = {'fine':1.00,'light_rain':0.95,'heavy_rain':0.88,'wind':0.92}.get(weather, 1.0)
+            else:
+                wf = 1.0
 
-            adj_opp  = 1.0+(opp_f-1.0)*fw.get('opponent',1.0)
-            adj_wf   = 1.0+(wf   -1.0)*fw.get('weather', 1.0)
-            adj_tog  = 1.0+(tog_f-1.0)*fw.get('tog',     1.0)
-            adj_form = 0.60+0.40*(1.0+(form-1.0)*fw.get('form', 1.0))
-            adj_tr   = 0.80+0.20*(1.0+(tr  -1.0)*fw.get('trend',1.0))
+            adj_opp  = 1.0 + (opp_f - 1.0) * fw.get('opponent', 1.0)
+            adj_wf   = 1.0 + (wf    - 1.0) * fw.get('weather',  1.0)
+            adj_tog  = 1.0 + (tog_f - 1.0) * fw.get('tog',      1.0)
+            adj_form = 0.60 + 0.40 * (1.0 + (form - 1.0) * fw.get('form',  1.0))
+            adj_tr   = 0.80 + 0.20 * (1.0 + (tr   - 1.0) * fw.get('trend', 1.0))
 
-            proj_mean = round(max(0, base   *adj_form*adj_tr*adj_opp*adj_wf*adj_tog*inj_f),1)
-            proj_med  = round(max(0, med_raw*adj_form*adj_tr*adj_opp*adj_wf*adj_tog*inj_f),1)
-            std = float(pd_[stat].tail(10).std() or proj_med*0.30)
+            # wavg-based projection (primary — used for fantasy score sum)
+            proj_wavg = round(max(0, base    * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f), 2)
+            # median-based projection (kept for reference/betting)
+            proj_med  = round(max(0, med_raw * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f), 1)
+
+            std = float(pd_[stat].tail(10).std() or proj_wavg * 0.30)
             results[stat] = {
-                'proj':proj_med,'mean':proj_mean,
-                'floor':round(max(0,proj_med-1.5*std),1),
-                'ceiling':round(proj_med+1.5*std,1),
-                'avg_20':round(base,1),'avg_5':round(avg5,1),'avg_3':round(avg3,1),'std':std,
-                'ou':{f'{stat}_over_{l}':calc_over_prob(proj_med,std,l) for l in lines},
+                'proj':     proj_wavg,
+                'median':   proj_med,
+                'floor':    round(max(0, proj_wavg - 1.5 * std), 1),
+                'ceiling':  round(proj_wavg + 1.5 * std, 1),
+                'avg_20':   round(base, 1),
+                'avg_5':    round(avg5, 1),
+                'avg_3':    round(avg3, 1),
+                'std':      std,
+                'ou':       {f'{stat}_over_{l}': calc_over_prob(proj_wavg, std, l) for l in lines},
             }
 
-        k = results['kicks']; h = results['handballs']
-        ds     = round(float(np.sqrt(k['std']**2+h['std']**2)),2)
-        dp_med = round(k['proj']+h['proj'],1)
-        results['disposals'] = {
-            'proj':dp_med,'mean':round(k['mean']+h['mean'],1),
-            'floor':round(k['floor']+h['floor'],1),'ceiling':round(k['ceiling']+h['ceiling'],1),
-            'avg_20':round(k['avg_20']+h['avg_20'],1),'avg_5':round(k['avg_5']+h['avg_5'],1),
-            'avg_3':round(k['avg_3']+h['avg_3'],1),'std':ds,
-            'ou':{f'disposals_over_{l}':calc_over_prob(dp_med,ds,l) for l in DISPOSAL_LINES},
+        # Disposals = kicks + handballs
+        if 'kicks' in results and 'handballs' in results:
+            k = results['kicks']; h = results['handballs']
+            ds     = round(float(np.sqrt(k['std']**2 + h['std']**2)), 2)
+            dp_wav = round(k['proj'] + h['proj'], 1)
+            dp_med = round(k['median'] + h['median'], 1)
+            results['disposals'] = {
+                'proj':    dp_wav,
+                'median':  dp_med,
+                'floor':   round(k['floor']   + h['floor'],   1),
+                'ceiling': round(k['ceiling'] + h['ceiling'], 1),
+                'avg_20':  round(k['avg_20']  + h['avg_20'],  1),
+                'avg_5':   round(k['avg_5']   + h['avg_5'],   1),
+                'avg_3':   round(k['avg_3']   + h['avg_3'],   1),
+                'std':     ds,
+                'ou':      {f'disposals_over_{l}': calc_over_prob(dp_wav, ds, l) for l in DISPOSAL_LINES},
+            }
+
+        # Calculate implied fantasy score from stat projections
+        implied_fantasy = sum(
+            results.get(stat, {}).get('proj', 0) * weight
+            for stat, weight in SCORING_WEIGHTS.items()
+            if stat in results
+        )
+        implied_fantasy = round(implied_fantasy, 1)
+
+        return {
+            'player':          player_name,
+            'position':        position,
+            'implied_fantasy': implied_fantasy,
+            **results
         }
+
+
         return {'player':player_name,'position':position,**results}
 
 
 def build_opp_stat_ratings(df_stats):
     ratings = {}
-    for stat in ['kicks','handballs','marks','tackles','hit_outs']:
+    for stat in ['kicks','handballs','marks','tackles','hit_outs','goals','behinds','frees_for','frees_against']:
         ratings[stat] = {}
         for pos in POSITIONS:
             ws,wt = {},{}
@@ -762,7 +811,9 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
             position=pos, team=team,
             manual_base_scores=manual_base_scores,
         )
-        if r: rows.append(r)
+        if r:
+            r['projection_score'] = r['projection']  # preserve score-based projection
+            rows.append(r)
 
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
@@ -797,18 +848,54 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
             opp_stat_ratings=opp_stat_ratings,
         )
         if r:
-            row = {'player':r['player'],'position':r['position']}
-            for stat,prefix in [('disposals','disp'),('kicks','kick'),('handballs','hb'),
-                                 ('marks','mark'),('tackles','tackle'),('hit_outs','ho')]:
-                d = r[stat]
-                row[f'{prefix}_proj']    = d['proj'];   row[f'{prefix}_mean']    = d['mean']
-                row[f'{prefix}_floor']   = d['floor'];  row[f'{prefix}_ceiling'] = d['ceiling']
-                row[f'{prefix}_avg_20']  = d['avg_20']; row[f'{prefix}_avg_5']   = d['avg_5']
-                row.update(d['ou'])
-            stat_rows.append(row)
+                row = {
+                    'player':          r['player'],
+                    'position':        r['position'],
+                    'implied_fantasy': r.get('implied_fantasy', 0),
+                }
+                for stat, prefix in [
+                    ('disposals','disp'),('kicks','kick'),('handballs','hb'),
+                    ('marks','mark'),('tackles','tackle'),('hit_outs','ho'),
+                    ('goals','goal'),('behinds','behind'),
+                ]:
+                    if stat not in r: continue
+                    d = r[stat]
+                    row[f'{prefix}_proj']    = d['proj']
+                    row[f'{prefix}_median']  = d.get('median', d['proj'])
+                    row[f'{prefix}_floor']   = d['floor']
+                    row[f'{prefix}_ceiling'] = d['ceiling']
+                    row[f'{prefix}_avg_20']  = d['avg_20']
+                    row[f'{prefix}_avg_5']   = d['avg_5']
+                    row.update(d['ou'])
+                stat_rows.append(row)
 
-    df_stat = pd.DataFrame(stat_rows).sort_values('disp_proj',ascending=False).reset_index(drop=True)
-    df_stat.index += 1
+    df_stat = pd.DataFrame(stat_rows).sort_values('disp_proj',ascending=False).reset_index(drop=True) if stat_rows else pd.DataFrame()
+    if not df_stat.empty:
+        df_stat.index += 1
+
+    # Replace fantasy projection with implied_fantasy from stat model
+    if not df_stat.empty and 'implied_fantasy' in df_stat.columns:
+        impl = df_stat.set_index('player')['implied_fantasy'].to_dict()
+        def update_proj(row):
+            p = row['player']
+            if p in impl and impl[p] > 0:
+                orig = row['projection_score'] if row.get('projection_score', 0) > 0 else 1.0
+                scale = impl[p] / orig
+                row['projection_stat'] = round(impl[p], 1)
+                row['floor_stat']      = round(row['floor']   * scale, 1)
+                row['ceiling_stat']    = round(row['ceiling'] * scale, 1)
+                row['projection']      = round(impl[p], 1)  # default to stat-driven
+                row['floor']           = row['floor_stat']
+                row['ceiling']         = row['ceiling_stat']
+            else:
+                row['projection_stat'] = row['projection']
+                row['floor_stat']      = row['floor']
+                row['ceiling_stat']    = row['ceiling']
+            return row
+        df_proj = df_proj.apply(update_proj, axis=1)
+        df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
+        df_proj.index += 1
+
     return df_proj, df_stat
 
 
@@ -1377,6 +1464,33 @@ def main():
 
         df = st.session_state.df_proj.copy()
 
+        # DEBUG
+        tm = df[df['player']=='Tom McCartin']
+        if len(tm):
+            p_score = tm['projection_score'].values[0] if 'projection_score' in tm.columns else 'MISSING'
+            p_stat  = tm['projection_stat'].values[0]  if 'projection_stat'  in tm.columns else 'MISSING'
+            p_proj  = tm['projection'].values[0]
+            st.warning(f"DEBUG McCartin: projection={p_proj}, projection_score={p_score}, projection_stat={p_stat}")
+
+        # Method toggle
+        method = st.radio(
+            "Projection method",
+            ["Proj (stats)", "Proj (score)"],
+            horizontal=True,
+            key="proj_method_toggle"
+        )
+        if method == "Proj (score)" and 'projection_score' in df.columns:
+            df['projection'] = df['projection_score']
+            df['floor']      = df.get('floor', df['floor'])
+            df['ceiling']    = df.get('ceiling', df['ceiling'])
+        elif method == "Proj (stats)" and 'projection_stat' in df.columns:
+            df['projection'] = df['projection_stat']
+            df['floor']      = df['floor_stat'] if 'floor_stat' in df.columns else df['floor']
+            df['ceiling']    = df['ceiling_stat'] if 'ceiling_stat' in df.columns else df['ceiling']
+
+        if 'salary' in df.columns and df['projection'].notna().any():
+            df['value'] = (df['projection'] / (df['salary'] / 1000)).round(2)
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             search = st.text_input("🔍 Search player", "")
@@ -1474,6 +1588,14 @@ def main():
             col3.metric("Confidence", f"{r['confidence']}%")
             col4.metric("Variance", f"{r['variance']}%")
 
+            # Show both projection methods side by side
+            if 'projection_score' in r and 'projection_stat' in r:
+                sc1, sc2, sc3 = st.columns(3)
+                sc1.metric("Proj (stats)", r.get('projection_stat', '–'))
+                sc2.metric("Proj (score)", r.get('projection_score', '–'))
+                diff = round(float(r.get('projection_stat', 0)) - float(r.get('projection_score', 0)), 1)
+                sc3.metric("Difference", f"{'+' if diff >= 0 else ''}{diff}")
+
             if r.get('role_factor', 1.0) != 1.0:
                 boost_pct = round((r['role_factor'] - 1.0) * 100)
                 st.info(
@@ -1514,21 +1636,26 @@ def main():
                 })
                 st.dataframe(hist.reset_index(drop=True), use_container_width=True, hide_index=True)
 
+            # Show implied fantasy total
+            if 'implied_fantasy' in r:
+                st.info(f"Implied fantasy score from stats: **{r['implied_fantasy']}**")
+
             stat_display = []
             for stat, prefix, label in [
                 ('disposals','disp','Disposals'),('kicks','kick','Kicks'),
                 ('handballs','hb','Handballs'),('marks','mark','Marks'),
-                ('tackles','tackle','Tackles'),('hit_outs','ho','Hit Outs'),
+                ('tackles','tackle','Tackles'),('goals','goal','Goals'),
+                ('behinds','behind','Behinds'),('hit_outs','ho','Hit Outs'),
             ]:
                 if f'{prefix}_proj' in r:
                     stat_display.append({
-                        'Stat':          label,
-                        'Proj (median)': r[f'{prefix}_proj'],
-                        'Mean':          r.get(f'{prefix}_mean','–'),
-                        'Floor':         r.get(f'{prefix}_floor','–'),
-                        'Ceiling':       r.get(f'{prefix}_ceiling','–'),
-                        '20-game avg':   r.get(f'{prefix}_avg_20','–'),
-                        '5-game avg':    r.get(f'{prefix}_avg_5','–'),
+                        'Stat':         label,
+                        'Proj (wavg)':  r[f'{prefix}_proj'],
+                        'Proj (median)':r.get(f'{prefix}_median', '–'),
+                        'Floor':        r.get(f'{prefix}_floor','–'),
+                        'Ceiling':      r.get(f'{prefix}_ceiling','–'),
+                        '20-game avg':  r.get(f'{prefix}_avg_20','–'),
+                        '5-game avg':   r.get(f'{prefix}_avg_5','–'),
                     })
             st.dataframe(pd.DataFrame(stat_display), use_container_width=True, hide_index=True)
 
@@ -1539,6 +1666,7 @@ def main():
                 ('handballs','hb','Handballs',HANDBALL_LINES),
                 ('marks','mark','Marks',MARK_LINES),
                 ('tackles','tackle','Tackles',TACKLE_LINES),
+                ('goals','goal','Goals',GOAL_LINES),
                 ('hit_outs','ho','Hit Outs',HITOUT_LINES),
             ]:
                 ou_cols = [f'{stat}_over_{l}' for l in lines if f'{stat}_over_{l}' in r]
@@ -2055,27 +2183,18 @@ def main():
                 is_home_lookup = {}
                 if fix_resp.data:
                     for row in fix_resp.data:
-                        home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
-                        away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
-                        rnd   = str(row.get('Round Number',''))
-                        yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
-                        # Date-based lookup
                         try:
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
-                            venue_lookup[(home, away, game_date)] = venue
-                            venue_lookup[(away, home, game_date)] = venue
-                            is_home_lookup[(home, away, game_date)] = True
-                            is_home_lookup[(away, home, game_date)] = False
                         except:
-                            pass
-                        # Round-based fallback lookup
-                        if rnd and yr:
-                            venue_lookup[(home, away, rnd, yr)]  = venue
-                            venue_lookup[(away, home, rnd, yr)]  = venue
-                            is_home_lookup[(home, away, rnd, yr)] = True
-                            is_home_lookup[(away, home, rnd, yr)] = False
+                            continue
+                        venue_lookup[(home, away, game_date)] = venue
+                        venue_lookup[(away, home, game_date)] = venue
+                        is_home_lookup[(home, away, game_date)] = True
+                        is_home_lookup[(away, home, game_date)] = False
 
             log_area  = st.empty()
             log_lines = []
