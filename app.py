@@ -813,6 +813,8 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
         )
         if r:
             r['projection_score'] = r['projection']  # preserve score-based projection
+            r['floor_score']      = r['floor']
+            r['ceiling_score']    = r['ceiling']
             rows.append(r)
 
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
@@ -1473,8 +1475,8 @@ def main():
         )
         if method == "Proj (score)" and 'projection_score' in df.columns:
             df['projection'] = df['projection_score']
-            df['floor']      = df.get('floor', df['floor'])
-            df['ceiling']    = df.get('ceiling', df['ceiling'])
+            df['floor']      = df['floor_score'] if 'floor_score' in df.columns else df['floor']
+            df['ceiling']    = df['ceiling_score'] if 'ceiling_score' in df.columns else df['ceiling']
         elif method == "Proj (stats)" and 'projection_stat' in df.columns:
             df['projection'] = df['projection_stat']
             df['floor']      = df['floor_stat'] if 'floor_stat' in df.columns else df['floor']
