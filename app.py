@@ -2174,7 +2174,67 @@ def main():
         with col2:
             round_num = st.number_input("Round number (AFL Tables)", 1, 30, 1)
 
-        if st.button("🔄 Start scrape", type="primary"):
+        # ── SINGLE PLAYER SCRAPE ─────────────────────────────
+        st.markdown("**Scrape single player**")
+        roster_names = sorted(df_roster['ds_name'].tolist()) if 'ds_name' in df_roster.columns else sorted(df_roster['name'].tolist())
+        single_player = st.selectbox("Select player", [""] + roster_names, key="single_player_select")
+        single_season = st.selectbox("Season ", [2026, 2025, 2024, 2023], key="single_season")
+        single_round  = st.number_input("Round ", 1, 30, 1, key="single_round")
+
+        if st.button("🔍 Scrape this player"):
+            if not single_player:
+                st.warning("Select a player first.")
+            else:
+                roster_row = df_roster[df_roster['ds_name'] == single_player] if 'ds_name' in df_roster.columns else df_roster[df_roster['name'] == single_player]
+                if len(roster_row) == 0:
+                    st.error(f"{single_player} not found in roster.")
+                else:
+                    team = roster_row['team'].iloc[0]
+                    pos  = roster_row['position'].iloc[0]
+                    with st.spinner(f"Scraping {single_player}..."):
+                        sb = get_supabase()
+                        fix_resp = sb.table('fixtures').select('*').execute()
+                        venue_lookup   = {}
+                        is_home_lookup = {}
+                        if fix_resp.data:
+                            for row in fix_resp.data:
+                                home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                                away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                                venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
+                                rnd   = str(row.get('Round Number',''))
+                                yr    = int(row.get('file_year', 0))
+                                date_str = row.get('Date','')
+                                try:
+                                    game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
+                                    venue_lookup[(home, away, game_date)] = venue
+                                    venue_lookup[(away, home, game_date)] = venue
+                                    is_home_lookup[(home, away, game_date)] = True
+                                    is_home_lookup[(away, home, game_date)] = False
+                                except:
+                                    pass
+                                if rnd and yr:
+                                    venue_lookup[(home, away, rnd, yr)]   = venue
+                                    venue_lookup[(away, home, rnd, yr)]   = venue
+                                    is_home_lookup[(home, away, rnd, yr)] = True
+                                    is_home_lookup[(away, home, rnd, yr)] = False
+
+                        records, status = scrape_with_fallbacks(
+                            single_player, team, pos, [single_season], venue_lookup, is_home_lookup
+                        )
+                        round_recs = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
+
+                    if round_recs:
+                        save_stats_to_supabase(round_recs)
+                        fs = round_recs[0]['fantasy_score']
+                        venue = round_recs[0]['venue']
+                        st.success(f"✅ {single_player} — Round {single_round} {single_season}: score={fs}, venue={venue}")
+                    else:
+                        st.error(f"❌ {single_player} — no data found for Round {single_round} {single_season}. Status: {status}")
+
+        st.markdown("---")
+        st.markdown("**Scrape full round**")
+        
+        if st.button("🔄 Start full scrape", type="primary"):
             with st.spinner("Loading existing stats..."):
                 df_stats = load_stats()
             with st.spinner("Building venue lookup..."):
