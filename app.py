@@ -418,13 +418,20 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                         except: pass
                         break
                 venue = 'Unknown'; is_home = False
+                t = DS_TEAM_MAP.get(team, team)
                 if game_date:
-                    t = DS_TEAM_MAP.get(team, team)
                     venue = (venue_lookup.get((t, opponent, game_date)) or
                              venue_lookup.get((opponent, t, game_date)) or 'Unknown')
                     if is_home_lookup:
                         is_home = (is_home_lookup.get((t, opponent, game_date)) or
                                    is_home_lookup.get((opponent, t, game_date)) or False)
+                if venue == 'Unknown' and isinstance(round_num, (int, str)):
+                    rnd_str = str(round_num)
+                    venue = (venue_lookup.get((t, opponent, rnd_str, season_int)) or
+                             venue_lookup.get((opponent, t, rnd_str, season_int)) or 'Unknown')
+                    if venue != 'Unknown' and is_home_lookup:
+                        is_home = (is_home_lookup.get((t, opponent, rnd_str, season_int)) or
+                                   is_home_lookup.get((opponent, t, rnd_str, season_int)) or False)
                 def gi(i):
                     if i >= len(cells) or not cells[i].strip(): return 0
                     try: return max(0, int(float(cells[i].strip())))
@@ -756,9 +763,6 @@ class AFLFantasyProjector:
             'implied_fantasy': implied_fantasy,
             **results
         }
-
-
-        return {'player':player_name,'position':position,**results}
 
 
 def build_opp_stat_ratings(df_stats):
@@ -1464,14 +1468,6 @@ def main():
             return
 
         df = st.session_state.df_proj.copy()
-
-        # DEBUG
-        tm = df[df['player']=='Tom McCartin']
-        if len(tm):
-            p_score = tm['projection_score'].values[0] if 'projection_score' in tm.columns else 'MISSING'
-            p_stat  = tm['projection_stat'].values[0]  if 'projection_stat'  in tm.columns else 'MISSING'
-            p_proj  = tm['projection'].values[0]
-            st.warning(f"DEBUG McCartin: projection={p_proj}, projection_score={p_score}, projection_stat={p_stat}")
 
         # Method toggle
         method = st.radio(
@@ -2244,18 +2240,25 @@ def main():
                 is_home_lookup = {}
                 if fix_resp.data:
                     for row in fix_resp.data:
-                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
-                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
+                        rnd   = str(row.get('Round Number',''))
+                        yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
                         try:
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
+                            venue_lookup[(home, away, game_date)] = venue
+                            venue_lookup[(away, home, game_date)] = venue
+                            is_home_lookup[(home, away, game_date)] = True
+                            is_home_lookup[(away, home, game_date)] = False
                         except:
-                            continue
-                        venue_lookup[(home, away, game_date)] = venue
-                        venue_lookup[(away, home, game_date)] = venue
-                        is_home_lookup[(home, away, game_date)] = True
-                        is_home_lookup[(away, home, game_date)] = False
+                            pass
+                        if rnd and yr:
+                            venue_lookup[(home, away, rnd, yr)]   = venue
+                            venue_lookup[(away, home, rnd, yr)]   = venue
+                            is_home_lookup[(home, away, rnd, yr)] = True
+                            is_home_lookup[(away, home, rnd, yr)] = False
 
             log_area  = st.empty()
             log_lines = []
