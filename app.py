@@ -1727,8 +1727,9 @@ def main():
                 mp_avg_2026 = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026)>=1 else '–'
                 st.markdown(f"**{sel_player}** · {sel_team} · 2026 avg {mp_avg_2026} · {len(out_rounds)} out rounds (2025–2026)")
 
-                if len(out_rounds) < 3:
-                    st.warning(f"Only {len(out_rounds)} out round(s) available in last 2 seasons — insufficient data for reliable analysis.")
+                min_rounds = 1 if sel_season_range == '2026 only' else 3
+                if len(out_rounds) < min_rounds:
+                    st.warning(f"Only {len(out_rounds)} out round(s) available — insufficient data for reliable analysis.")
                 else:
                     recent = df_stats[
                         (df_stats['season'].isin(recent_2s)) & (df_stats['tog_pct']>=0.45)
@@ -1750,7 +1751,7 @@ def main():
                         without_scores = [r['fantasy_score'] for _,r in tm_data.iterrows()
                                           if (r['season'],r['round']) in out_rounds]
                         n_out      = len(without_scores)
-                        sufficient = n_out >= 3
+                        sufficient = n_out >= 3 if sel_season_range != '2026 only' else n_out >= 1
 
                         if sufficient and with_scores:
                             avg_with    = round(float(np.mean(with_scores)),1)
