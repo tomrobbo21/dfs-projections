@@ -418,20 +418,13 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                         except: pass
                         break
                 venue = 'Unknown'; is_home = False
-                t = DS_TEAM_MAP.get(team, team)
                 if game_date:
+                    t = DS_TEAM_MAP.get(team, team)
                     venue = (venue_lookup.get((t, opponent, game_date)) or
                              venue_lookup.get((opponent, t, game_date)) or 'Unknown')
                     if is_home_lookup:
                         is_home = (is_home_lookup.get((t, opponent, game_date)) or
                                    is_home_lookup.get((opponent, t, game_date)) or False)
-                if venue == 'Unknown' and isinstance(round_num, (int, str)):
-                    rnd_str = str(round_num)
-                    venue = (venue_lookup.get((t, opponent, rnd_str, season_int)) or
-                             venue_lookup.get((opponent, t, rnd_str, season_int)) or 'Unknown')
-                    if venue != 'Unknown' and is_home_lookup:
-                        is_home = (is_home_lookup.get((t, opponent, rnd_str, season_int)) or
-                                   is_home_lookup.get((opponent, t, rnd_str, season_int)) or False)
                 def gi(i):
                     if i >= len(cells) or not cells[i].strip(): return 0
                     try: return max(0, int(float(cells[i].strip())))
@@ -763,6 +756,9 @@ class AFLFantasyProjector:
             'implied_fantasy': implied_fantasy,
             **results
         }
+
+
+        return {'player':player_name,'position':position,**results}
 
 
 def build_opp_stat_ratings(df_stats):
@@ -1469,6 +1465,14 @@ def main():
 
         df = st.session_state.df_proj.copy()
 
+        # DEBUG
+        tm = df[df['player']=='Tom McCartin']
+        if len(tm):
+            p_score = tm['projection_score'].values[0] if 'projection_score' in tm.columns else 'MISSING'
+            p_stat  = tm['projection_stat'].values[0]  if 'projection_stat'  in tm.columns else 'MISSING'
+            p_proj  = tm['projection'].values[0]
+            st.warning(f"DEBUG McCartin: projection={p_proj}, projection_score={p_score}, projection_stat={p_stat}")
+
         # Method toggle
         method = st.radio(
             "Projection method",
@@ -1727,9 +1731,8 @@ def main():
                 mp_avg_2026 = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026)>=1 else '–'
                 st.markdown(f"**{sel_player}** · {sel_team} · 2026 avg {mp_avg_2026} · {len(out_rounds)} out rounds (2025–2026)")
 
-                min_rounds = 1 if sel_season_range == '2026 only' else 3
-                if len(out_rounds) < min_rounds:
-                    st.warning(f"Only {len(out_rounds)} out round(s) available — insufficient data for reliable analysis.")
+                if len(out_rounds) < 3:
+                    st.warning(f"Only {len(out_rounds)} out round(s) available in last 2 seasons — insufficient data for reliable analysis.")
                 else:
                     recent = df_stats[
                         (df_stats['season'].isin(recent_2s)) & (df_stats['tog_pct']>=0.45)
@@ -1751,7 +1754,7 @@ def main():
                         without_scores = [r['fantasy_score'] for _,r in tm_data.iterrows()
                                           if (r['season'],r['round']) in out_rounds]
                         n_out      = len(without_scores)
-                        sufficient = n_out >= 3 if sel_season_range != '2026 only' else n_out >= 1
+                        sufficient = n_out >= 3
 
                         if sufficient and with_scores:
                             avg_with    = round(float(np.mean(with_scores)),1)
@@ -1836,13 +1839,14 @@ def main():
         # ── Stat selector ──────────────────────────────────────
         # Stat key → (df_stat prefix, std raw column in df_stats)
         MOST_STATS = {
-            'Fantasy Points': ('fantasy_score', None),
-            'Disposals':      ('disposals',     'kicks'),   # std derived below
-            'Kicks':          ('kicks',          'kicks'),
-            'Handballs':      ('handballs',      'handballs'),
-            'Marks':          ('marks',          'marks'),
-            'Tackles':        ('tackles',        'tackles'),
-            'Hit Outs':       ('hit_outs',       'hit_outs'),
+            'Fantasy Points (score)': ('fantasy_score_proj', None),
+            'Fantasy Points (stats)': ('fantasy_score_stat', None),
+            'Disposals':              ('disposals',     'kicks'),   # std derived below
+            'Kicks':                  ('kicks',          'kicks'),
+            'Handballs':              ('handballs',      'handballs'),
+            'Marks':                  ('marks',          'marks'),
+            'Tackles':                ('tackles',        'tackles'),
+            'Hit Outs':               ('hit_outs',       'hit_outs'),
         }
 
         STAT_PREFIX = {
@@ -1919,12 +1923,18 @@ def main():
                 team     = fp_row.get('team', '—')
                 opponent = fp_row.get('opponent', '—')
 
-            if stat_key == 'fantasy_score':
+            if stat_key in ('fantasy_score_proj', 'fantasy_score_stat'):
                 if pname in fp_lookup.index:
                     fp_row    = fp_lookup.loc[pname]
-                    proj_val  = float(fp_row['projection'])
-                    floor_val = float(fp_row['floor'])
-                    ceil_val  = float(fp_row['ceiling'])
+                    # Choose score-based or stat-based projection
+                    if stat_key == 'fantasy_score_proj':
+                        proj_val  = float(fp_row['projection_score']) if 'projection_score' in fp_row.index else float(fp_row['projection'])
+                        floor_val = float(fp_row.get('floor_score', fp_row['floor']))
+                        ceil_val  = float(fp_row.get('ceiling_score', fp_row['ceiling']))
+                    else:
+                        proj_val  = float(fp_row['projection_stat']) if 'projection_stat' in fp_row.index else float(fp_row['projection'])
+                        floor_val = float(fp_row.get('floor_stat', fp_row['floor']))
+                        ceil_val  = float(fp_row.get('ceiling_stat', fp_row['ceiling']))
                     avg_5     = float(fp_row['form_5_avg']) if fp_row.get('form_5_avg') is not None else None
                     avg_20    = float(fp_row['base_avg'])
                     # std from raw history (tail 10)
@@ -2142,7 +2152,7 @@ def main():
         st.caption(
             f"Win % calculated via {n_sims:,}-simulation Monte Carlo. "
             f"{'Poisson distribution (discrete count)' if stat_key == 'goals' else 'Truncated normal distribution'}. "
-            f"{'Fantasy Points projection uses full model (form, trend, opponent, venue, weather, TOG).' if stat_key == 'fantasy_score' else ''} "
+            f"{'Fantasy Points (score) uses score-based model. Fantasy Points (stats) uses stat-driven model.' if stat_key in ('fantasy_score_proj','fantasy_score_stat') else ''} "
             "Fair Odds = 1 / Win%. Edge = (Bookie ÷ Fair − 1) × 100. "
             "✅ VALUE = edge ≥ 5% · ⚠️ marginal = 1–5% · ❌ overpriced = negative edge."
         )
@@ -2241,25 +2251,18 @@ def main():
                 is_home_lookup = {}
                 if fix_resp.data:
                     for row in fix_resp.data:
-                        home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
-                        away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
-                        rnd   = str(row.get('Round Number',''))
-                        yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
                         try:
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
-                            venue_lookup[(home, away, game_date)] = venue
-                            venue_lookup[(away, home, game_date)] = venue
-                            is_home_lookup[(home, away, game_date)] = True
-                            is_home_lookup[(away, home, game_date)] = False
                         except:
-                            pass
-                        if rnd and yr:
-                            venue_lookup[(home, away, rnd, yr)]   = venue
-                            venue_lookup[(away, home, rnd, yr)]   = venue
-                            is_home_lookup[(home, away, rnd, yr)] = True
-                            is_home_lookup[(away, home, rnd, yr)] = False
+                            continue
+                        venue_lookup[(home, away, game_date)] = venue
+                        venue_lookup[(away, home, game_date)] = venue
+                        is_home_lookup[(home, away, game_date)] = True
+                        is_home_lookup[(away, home, game_date)] = False
 
             log_area  = st.empty()
             log_lines = []
