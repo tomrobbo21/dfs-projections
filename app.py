@@ -2470,6 +2470,8 @@ def main():
                             'Correlation':round(corr, 3),
                             'Boom %':     bf,
                         })
+                if not rows:
+                    return pd.DataFrame()
                 df_s = pd.DataFrame(rows).sort_values('Combined', ascending=False).head(max_pairs).reset_index(drop=True)
                 df_s.index += 1
                 return df_s
