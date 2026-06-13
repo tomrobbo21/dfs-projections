@@ -2074,6 +2074,7 @@ def main():
         # ── Stat selector ──────────────────────────────────────
         # Stat key → (df_stat prefix, std raw column in df_stats)
         MOST_STATS = {
+            'Fantasy Points (blended)': ('fantasy_score_blended', None),
             'Fantasy Points (score)': ('fantasy_score_proj', None),
             'Fantasy Points (stats)': ('fantasy_score_stat', None),
             'Disposals':              ('disposals',     'kicks'),   # std derived below
@@ -2158,18 +2159,21 @@ def main():
                 team     = fp_row.get('team', '—')
                 opponent = fp_row.get('opponent', '—')
 
-            if stat_key in ('fantasy_score_proj', 'fantasy_score_stat'):
-                if pname in fp_lookup.index:
-                    fp_row    = fp_lookup.loc[pname]
-                    # Choose score-based or stat-based projection
-                    if stat_key == 'fantasy_score_proj':
-                        proj_val  = float(fp_row['projection_score']) if 'projection_score' in fp_row.index else float(fp_row['projection'])
-                        floor_val = float(fp_row.get('floor_score', fp_row['floor']))
-                        ceil_val  = float(fp_row.get('ceiling_score', fp_row['ceiling']))
-                    else:
-                        proj_val  = float(fp_row['projection_stat']) if 'projection_stat' in fp_row.index else float(fp_row['projection'])
-                        floor_val = float(fp_row.get('floor_stat', fp_row['floor']))
-                        ceil_val  = float(fp_row.get('ceiling_stat', fp_row['ceiling']))
+            if stat_key in ('fantasy_score_proj', 'fantasy_score_stat', 'fantasy_score_blended'):
+                    if pname in fp_lookup.index:
+                        fp_row    = fp_lookup.loc[pname]
+                        if stat_key == 'fantasy_score_proj':
+                            proj_val  = float(fp_row['projection_score']) if 'projection_score' in fp_row.index else float(fp_row['projection'])
+                            floor_val = float(fp_row.get('floor_score', fp_row['floor']))
+                            ceil_val  = float(fp_row.get('ceiling_score', fp_row['ceiling']))
+                        elif stat_key == 'fantasy_score_stat':
+                            proj_val  = float(fp_row['projection_stat']) if 'projection_stat' in fp_row.index else float(fp_row['projection'])
+                            floor_val = float(fp_row.get('floor_stat', fp_row['floor']))
+                            ceil_val  = float(fp_row.get('ceiling_stat', fp_row['ceiling']))
+                        else:
+                            proj_val  = float(fp_row['projection'])
+                            floor_val = float(fp_row['floor'])
+                            ceil_val  = float(fp_row['ceiling'])
                     avg_5     = float(fp_row['form_5_avg']) if fp_row.get('form_5_avg') is not None else None
                     avg_20    = float(fp_row['base_avg'])
                     # std from raw history (tail 10)
