@@ -2415,9 +2415,9 @@ def main():
             ].copy()
 
             # Pivot to player × round matrix
-            recent['game_key'] = recent['season'].astype(str) + '_' + recent['round'].astype(str) + '_' + recent['team']
-            pivot = recent.pivot_table(index='game_key', columns='name', values='fantasy_score')
-            pivot = pivot.dropna(axis=1, thresh=int(len(pivot)*0.3))  # need 30%+ data
+            recent['game_key'] = recent['season'].astype(str) + '_' + recent['round'].astype(str)
+            pivot = recent.pivot_table(index='game_key', columns='name', values='fantasy_score', aggfunc='first')
+            pivot = pivot.dropna(axis=1, thresh=10)  # need at least 10 rounds of data
 
             # Only keep players in current slate
             slate_players = df_proj['player'].tolist()
