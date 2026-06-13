@@ -2471,7 +2471,7 @@ def main():
                         seen.add(key)
                         corr = corr_matrix.loc[p1, p2] if p1 in corr_matrix.index and p2 in corr_matrix.columns else None
                         if corr is None or np.isnan(corr): continue
-                        bf   = boom_freq(p1, p2)
+                        bf, bf_count = boom_freq(p1, p2)
                         rows.append({
                             'Player 1':   p1,
                             'Player 2':   p2,
@@ -2482,10 +2482,17 @@ def main():
                             'Combined':   round((proj_map.get(p1,0) or 0) + (proj_map.get(p2,0) or 0), 1),
                             'Correlation':round(corr, 3),
                             'Boom %':     bf,
+                            'Boom games': bf_count,
                         })
                 if not rows:
                     return pd.DataFrame()
-                df_s = pd.DataFrame(rows).sort_values('Combined', ascending=False).head(max_pairs).reset_index(drop=True)
+                df_s = pd.DataFrame(rows)
+                df_s = df_s[
+                    (df_s['Boom games'] >= 2) &
+                    (df_s['Correlation'] >= 0.15) &
+                    (df_s['Boom %'] > 0)
+                ]
+                df_s = df_s.sort_values(['Boom %', 'Correlation'], ascending=[False, False]).head(max_pairs).reset_index(drop=True)
                 df_s.index += 1
                 return df_s
 
