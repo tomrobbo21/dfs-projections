@@ -1223,6 +1223,30 @@ def main():
                 st.session_state.inflate_set        = set()
                 st.session_state.manual_role_boosts = {}
                 st.success(f"✅ {len(players)} named players · {len(out_players)} OUT")
+                # Role change pre-check
+                if st.session_state.df_stats is not None:
+                    known = set(st.session_state.df_stats['name'].unique())
+                    rc_flags = []
+                    for _, row in players.iterrows():
+                        p = row['ds_name']
+                        if p not in known: continue
+                        pd_p = st.session_state.df_stats[
+                            (st.session_state.df_stats['name']==p) &
+                            (st.session_state.df_stats['tog_pct']>=0.45)
+                        ].copy()
+                        if len(pd_p) < 5: continue
+                        r3 = pd_p['fantasy_score'].tail(3).values
+                        stat_implied = sum(
+                            wavg(pd_p[stat].tail(20).values) * w
+                            for stat, w in [('kicks',3),('handballs',2),('marks',3),
+                                           ('tackles',4),('goals',6),('behinds',1),('hit_outs',1)]
+                            if stat in pd_p.columns
+                        )
+                        detected, pct = detect_role_change(r3, stat_implied)
+                        if detected:
+                            rc_flags.append(f"{p} (+{pct:.0f}%)")
+                    if rc_flags:
+                        st.warning(f"⚠️ Possible role changes detected: {', '.join(rc_flags)}. Consider manual adjustment before running projections.")
             except Exception as e:
                 st.error(f"Error parsing CSV: {e}")
         elif st.session_state.ds_players is not None:
