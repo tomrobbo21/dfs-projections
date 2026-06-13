@@ -2397,7 +2397,7 @@ def main():
     # ══════════════════════════════════════════════════════════
     elif page == "🔗 Stacking":
         st.header("🔗 Stacking Tool")
-        st.markdown("Find players who historically boom together. Sorted by boom frequency — how often both players exceeded their individual ceiling in the same game.")
+        st.markdown("Pick a player to see their same-game stack partners ranked by boom frequency.")
 
         if st.session_state.df_proj is None or st.session_state.df_proj.empty:
             st.info("Run projections first.")
@@ -2421,7 +2421,6 @@ def main():
             pivot_slate   = pivot[[c for c in slate_players if c in pivot.columns]]
             corr_matrix   = pivot_slate.corr(method='pearson')
 
-            # Individual boom thresholds: 80th percentile of last 2 seasons
             boom_thresholds = {}
             for pname in slate_players:
                 pd_p = recent[recent['name']==pname]['fantasy_score']
@@ -2431,210 +2430,61 @@ def main():
             opp_map  = df_proj.set_index('player')['opponent'].to_dict()
             proj_map = df_proj.set_index('player')['projection'].to_dict()
 
-            def shared_games_data(players_list):
-                """Return DataFrame of games where all players in list have scores."""
-                sub = recent[recent['name'].isin(players_list)]
-                pivot_sub = sub.pivot_table(index='game_key', columns='name', values='fantasy_score', aggfunc='first')
-                return pivot_sub.dropna()
-
             def calc_pair_stats(p1, p2):
-                """Return (corr, boom_pct, boom_count, n_shared) for a pair."""
                 if p1 not in corr_matrix.columns or p2 not in corr_matrix.columns:
                     return None, 0.0, 0, 0
                 corr = corr_matrix.loc[p1, p2]
                 if np.isnan(corr): return None, 0.0, 0, 0
-                shared = shared_games_data([p1, p2])
-                n_shared = len(shared)
+                sub = recent[recent['name'].isin([p1, p2])]
+                pivot_sub = sub.pivot_table(index='game_key', columns='name', values='fantasy_score', aggfunc='first').dropna()
+                n_shared = len(pivot_sub)
                 if n_shared < 5: return corr, 0.0, 0, n_shared
                 t1 = boom_thresholds.get(p1, 90.0)
                 t2 = boom_thresholds.get(p2, 90.0)
-                boom_count = int(((shared[p1] >= t1) & (shared[p2] >= t2)).sum())
+                boom_count = int(((pivot_sub[p1] >= t1) & (pivot_sub[p2] >= t2)).sum())
                 boom_pct   = round(boom_count / n_shared * 100, 1)
                 return corr, boom_pct, boom_count, n_shared
 
-            def calc_group_stats(players_list):
-                """Return (avg_corr, boom_pct, boom_count, n_shared) for 3-4 player group."""
-                shared = shared_games_data(players_list)
-                n_shared = len(shared)
-                if n_shared < 5: return 0.0, 0.0, 0, n_shared
-                # Avg pairwise correlation
-                pairs = [(players_list[i], players_list[j])
-                         for i in range(len(players_list))
-                         for j in range(i+1, len(players_list))]
-                corrs = []
-                for pa, pb in pairs:
-                    if pa in corr_matrix.columns and pb in corr_matrix.columns:
-                        c = corr_matrix.loc[pa, pb]
-                        if not np.isnan(c): corrs.append(c)
-                avg_corr = round(float(np.mean(corrs)), 3) if corrs else 0.0
-                # All players exceed their boom threshold in same game
-                boom_mask = pd.Series([True]*len(shared), index=shared.index)
-                for p in players_list:
-                    if p in shared.columns:
-                        boom_mask = boom_mask & (shared[p] >= boom_thresholds.get(p, 90.0))
-                boom_count = int(boom_mask.sum())
-                boom_pct   = round(boom_count / n_shared * 100, 1)
-                return avg_corr, boom_pct, boom_count, n_shared
-
-            tab1, tab2, tab3 = st.tabs(["Same Team Stacks", "Same Game Stacks", "Pick a Player"])
-
-            def render_stack_table(rows, key_suffix):
-                if not rows:
-                    return False
-                df_s = pd.DataFrame(rows)
-                df_s = df_s[
-                    (df_s['Boom games'] >= 2) &
-                    (df_s['Correlation'] >= 0.15)
-                ].sort_values(['Boom %', 'Correlation'], ascending=[False, False]).reset_index(drop=True)
-                df_s.index += 1
-                if df_s.empty: return False
-                st.dataframe(
-                    df_s,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        'Proj':        st.column_config.NumberColumn(format="%.1f"),
-                        'Combined':    st.column_config.NumberColumn(format="%.1f"),
-                        'Correlation': st.column_config.NumberColumn(format="%.3f"),
-                        'Boom %':      st.column_config.NumberColumn('Boom %', format="%.1f"),
-                        'Boom games':  st.column_config.NumberColumn('Boom games', format="%d"),
-                        'Shared games':st.column_config.NumberColumn('Shared games', format="%d"),
-                    }
-                )
-                return True
-
-            def build_pairs(filter_fn):
-                rows = []
-                players = [p for p in slate_players if p in corr_matrix.columns]
-                seen = set()
-                for i, p1 in enumerate(players):
-                    for p2 in players[i+1:]:
-                        if not filter_fn(p1, p2): continue
-                        key = tuple(sorted([p1, p2]))
-                        if key in seen: continue
-                        seen.add(key)
-                        corr, boom_pct, boom_count, n_shared = calc_pair_stats(p1, p2)
-                        if corr is None: continue
-                        rows.append({
-                            'Player 1':     p1,
-                            'Player 2':     p2,
-                            'Proj 1':       round(proj_map.get(p1, 0), 1),
-                            'Proj 2':       round(proj_map.get(p2, 0), 1),
-                            'Combined':     round((proj_map.get(p1,0) or 0) + (proj_map.get(p2,0) or 0), 1),
-                            'Correlation':  round(corr, 3),
-                            'Boom %':       boom_pct,
-                            'Boom games':   boom_count,
-                            'Shared games': n_shared,
-                        })
-                return rows
-
-            def build_groups(filter_fn, size):
-                rows = []
-                players = [p for p in slate_players if p in corr_matrix.columns]
-                from itertools import combinations
-                seen = set()
-                for combo in combinations(players, size):
-                    if not all(filter_fn(combo[0], p) for p in combo[1:]): continue
-                    key = tuple(sorted(combo))
-                    if key in seen: continue
-                    seen.add(key)
-                    avg_corr, boom_pct, boom_count, n_shared = calc_group_stats(list(combo))
-                    if boom_count < 2 or avg_corr < 0.15: continue
-                    combined = round(sum(proj_map.get(p, 0) or 0 for p in combo), 1)
-                    row = {f'Player {i+1}': combo[i] for i in range(size)}
-                    row.update({
-                        'Combined':     combined,
-                        'Correlation':  avg_corr,
+            sel_stack = st.selectbox("Select player", [""] + slate_players, key="stack_player_select")
+            if sel_stack:
+                stack_rows = []
+                for p2 in slate_players:
+                    if p2 == sel_stack: continue
+                    same_game = (opp_map.get(sel_stack) == team_map.get(p2) or
+                                 opp_map.get(p2) == team_map.get(sel_stack))
+                    if not same_game: continue
+                    corr, boom_pct, boom_count, n_shared = calc_pair_stats(sel_stack, p2)
+                    if corr is None: continue
+                    stack_rows.append({
+                        'Partner':      p2,
+                        'Team':         team_map.get(p2, ''),
+                        'Proj':         round(proj_map.get(p2, 0), 1),
+                        'Combined':     round((proj_map.get(sel_stack, 0) or 0) + (proj_map.get(p2, 0) or 0), 1),
+                        'Correlation':  round(corr, 3),
                         'Boom %':       boom_pct,
                         'Boom games':   boom_count,
                         'Shared games': n_shared,
                     })
-                    rows.append(row)
-                return rows
-
-            with tab1:
-                same_team_fn = lambda p1, p2: team_map.get(p1) == team_map.get(p2)
-
-                st.markdown("**Pairs**")
-                pair_rows = build_pairs(same_team_fn)
-                if not render_stack_table(pair_rows, 'st_pairs'):
-                    st.info("No same-team pairs meeting minimum thresholds (≥2 boom games, correlation ≥0.15, ≥5 shared games).")
-
-                st.markdown("**3-player stacks**")
-                trio_rows = build_groups(same_team_fn, 3)
-                if not render_stack_table(trio_rows, 'st_trios'):
-                    st.info("No same-team 3-player stacks meeting minimum thresholds.")
-
-                st.markdown("**4-player stacks**")
-                quad_rows = build_groups(same_team_fn, 4)
-                if not render_stack_table(quad_rows, 'st_quads'):
-                    st.info("No same-team 4-player stacks meeting minimum thresholds.")
-
-            with tab2:
-                same_game_fn = lambda p1, p2: (
-                    team_map.get(p1) != team_map.get(p2) and
-                    (opp_map.get(p1) == team_map.get(p2) or opp_map.get(p2) == team_map.get(p1))
-                )
-
-                st.markdown("**Pairs**")
-                pair_rows = build_pairs(same_game_fn)
-                if not render_stack_table(pair_rows, 'sg_pairs'):
-                    st.info("No same-game pairs meeting minimum thresholds.")
-
-                st.markdown("**3-player stacks**")
-                trio_rows = build_groups(same_game_fn, 3)
-                if not render_stack_table(trio_rows, 'sg_trios'):
-                    st.info("No same-game 3-player stacks meeting minimum thresholds.")
-
-                st.markdown("**4-player stacks**")
-                quad_rows = build_groups(same_game_fn, 4)
-                if not render_stack_table(quad_rows, 'sg_quads'):
-                    st.info("No same-game 4-player stacks meeting minimum thresholds.")
-
-            with tab3:
-                st.markdown("**Pick a player to see their best stack partners**")
-                sel_stack = st.selectbox("Select player", [""] + slate_players, key="stack_player_select")
-                if sel_stack:
-                    stack_rows = []
-                    for p2 in slate_players:
-                        if p2 == sel_stack: continue
-                        same_team = team_map.get(sel_stack) == team_map.get(p2)
-                        same_game = (opp_map.get(sel_stack) == team_map.get(p2) or
-                                     opp_map.get(p2) == team_map.get(sel_stack))
-                        if not (same_team or same_game): continue
-                        corr, boom_pct, boom_count, n_shared = calc_pair_stats(sel_stack, p2)
-                        if corr is None: continue
-                        stack_rows.append({
-                            'Partner':      p2,
-                            'Team':         team_map.get(p2,''),
-                            'Type':         'Same team' if same_team else 'Same game',
-                            'Proj':         round(proj_map.get(p2, 0), 1),
-                            'Combined':     round((proj_map.get(sel_stack,0) or 0) + (proj_map.get(p2,0) or 0), 1),
-                            'Correlation':  round(corr, 3) if corr else 0.0,
-                            'Boom %':       boom_pct,
-                            'Boom games':   boom_count,
-                            'Shared games': n_shared,
-                        })
-                    if stack_rows:
-                        df_pick = pd.DataFrame(stack_rows)
-                        df_pick = df_pick.sort_values(['Boom %','Correlation'], ascending=[False,False]).reset_index(drop=True)
-                        df_pick.index += 1
-                        st.markdown(f"**{sel_stack}** (proj: {round(proj_map.get(sel_stack,0),1)}) — stack partners:")
-                        st.dataframe(
-                            df_pick,
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                'Proj':         st.column_config.NumberColumn(format="%.1f"),
-                                'Combined':     st.column_config.NumberColumn(format="%.1f"),
-                                'Correlation':  st.column_config.NumberColumn(format="%.3f"),
-                                'Boom %':       st.column_config.NumberColumn('Boom %', format="%.1f"),
-                                'Boom games':   st.column_config.NumberColumn('Boom games', format="%d"),
-                                'Shared games': st.column_config.NumberColumn('Shared games', format="%d"),
-                            }
-                        )
-                    else:
-                        st.info("No stack partners found for this player in the current slate.")
+                if stack_rows:
+                    df_pick = pd.DataFrame(stack_rows)
+                    df_pick = df_pick.sort_values(['Boom %', 'Correlation'], ascending=[False, False]).reset_index(drop=True)
+                    df_pick.index += 1
+                    st.markdown(f"**{sel_stack}** (proj: {round(proj_map.get(sel_stack, 0), 1)}) — same-game stack partners:")
+                    st.dataframe(
+                        df_pick,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'Proj':         st.column_config.NumberColumn(format="%.1f"),
+                            'Combined':     st.column_config.NumberColumn(format="%.1f"),
+                            'Correlation':  st.column_config.NumberColumn(format="%.3f"),
+                            'Boom %':       st.column_config.NumberColumn('Boom %', format="%.1f"),
+                            'Boom games':   st.column_config.NumberColumn('Boom games', format="%d"),
+                            'Shared games': st.column_config.NumberColumn('Shared games', format="%d"),
+                        }
+                    )
+                else:
+                    st.info("No same-game stack partners found for this player.")
 
     # ══════════════════════════════════════════════════════════
     # ADD ROUND DATA PAGE
