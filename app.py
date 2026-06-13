@@ -1583,18 +1583,19 @@ def main():
         # Method toggle
         method = st.radio(
             "Projection method",
-            ["Proj (stats)", "Proj (score)"],
+            ["Blended (default)", "Proj (stats)", "Proj (score)"],
             horizontal=True,
             key="proj_method_toggle"
         )
         if method == "Proj (score)" and 'projection_score' in df.columns:
             df['projection'] = df['projection_score']
-            df['floor']      = df.get('floor', df['floor'])
-            df['ceiling']    = df.get('ceiling', df['ceiling'])
+            df['floor']      = df['floor_score'] if 'floor_score' in df.columns else df['floor']
+            df['ceiling']    = df['ceiling_score'] if 'ceiling_score' in df.columns else df['ceiling']
         elif method == "Proj (stats)" and 'projection_stat' in df.columns:
             df['projection'] = df['projection_stat']
             df['floor']      = df['floor_stat'] if 'floor_stat' in df.columns else df['floor']
             df['ceiling']    = df['ceiling_stat'] if 'ceiling_stat' in df.columns else df['ceiling']
+        # Blended (default) — projection column already contains the blended value, no change needed
 
         if 'salary' in df.columns and df['projection'].notna().any():
             df['value'] = (df['projection'] / (df['salary'] / 1000)).round(2)
