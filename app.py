@@ -2425,18 +2425,31 @@ def main():
 
             corr_matrix = pivot_slate.corr(method='pearson')
 
-            # Boom frequency: both players scored 90+ in same game
+            # Individual boom thresholds: 80th percentile of last 2 seasons
+            boom_thresholds = {}
+            for pname in slate_players:
+                pd_p = recent[recent['name']==pname]['fantasy_score']
+                if len(pd_p) >= 5:
+                    boom_thresholds[pname] = float(np.percentile(pd_p, 80))
+                else:
+                    boom_thresholds[pname] = 90.0  # fallback
+
             def boom_freq(p1, p2):
                 shared = recent[recent['name'].isin([p1,p2])].copy()
-                if len(shared) == 0: return 0.0
+                if len(shared) == 0: return 0.0, 0
                 shared_keys = shared.groupby('game_key').filter(lambda x: len(x)==2)
-                if len(shared_keys) == 0: return 0.0
-                boom_games = shared_keys.groupby('game_key').filter(
-                    lambda x: (x['fantasy_score'] >= 90).all()
-                )
+                if len(shared_keys) == 0: return 0.0, 0
+                t1 = boom_thresholds.get(p1, 90.0)
+                t2 = boom_thresholds.get(p2, 90.0)
                 total_together = len(shared_keys['game_key'].unique())
-                if total_together == 0: return 0.0
-                return round(len(boom_games['game_key'].unique()) / total_together * 100, 1)
+                boom_games = 0
+                for gk, grp in shared_keys.groupby('game_key'):
+                    scores = grp.set_index('name')['fantasy_score']
+                    if p1 in scores.index and p2 in scores.index:
+                        if scores[p1] >= t1 and scores[p2] >= t2:
+                            boom_games += 1
+                if total_together == 0: return 0.0, 0
+                return round(boom_games / total_together * 100, 1), boom_games
 
             # Get team/game info
             team_map = df_proj.set_index('player')['team'].to_dict()
