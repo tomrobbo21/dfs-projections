@@ -1439,10 +1439,18 @@ def main():
                             st.caption(f"Solo avg: {solo_avg} ({len(solo_games)} games)")
                         if shared_avg:
                             st.caption(f"Shared avg: {shared_avg} ({n_shared} games) ✓ historical")
+                            if is_shared:
+                                st.caption(f"↳ Projection will use {shared_avg} as base")
                         elif n_shared > 0:
                             st.caption(f"Only {n_shared} shared games — 8% reduction will apply")
+                            if is_shared and solo_avg:
+                                reduced = round(solo_avg * 0.92, 1)
+                                st.caption(f"↳ Projection score reduced: {solo_avg} → {reduced}")
                         else:
                             st.caption("No shared history — 8% reduction will apply if flagged")
+                            if is_shared and solo_avg:
+                                reduced = round(solo_avg * 0.92, 1)
+                                st.caption(f"↳ Projection score reduced: {solo_avg} → {reduced}")
 
         # ── DEBUTANTS ─────────────────────────────────────────
         # CHANGE 7: Position-based default (66% of 2026 position average)
