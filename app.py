@@ -31,6 +31,26 @@ STAT_COLS  = list(SCORING.keys())
 POSITIONS  = ['MID', 'DEF', 'FWD', 'RUC']
 SEASON_WEIGHTS = {2026: 1.00, 2025: 0.70, 2024: 0.40, 2023: 0.20}
 
+# Position-specific model parameters
+POS_PARAMS = {
+    'MID': {'form_window':5, 'form_cap':0.20, 'trend_cap':0.10, 'venue_cap':0.07, 'ha_cap':0.15, 'wins_lo':10, 'wins_hi':90, 'score_blend':0.40},
+    'DEF': {'form_window':5, 'form_cap':0.18, 'trend_cap':0.09, 'venue_cap':0.06, 'ha_cap':0.13, 'wins_lo':11, 'wins_hi':89, 'score_blend':0.35},
+    'FWD': {'form_window':5, 'form_cap':0.22, 'trend_cap':0.11, 'venue_cap':0.08, 'ha_cap':0.17, 'wins_lo': 9, 'wins_hi':91, 'score_blend':0.55},
+    'RUC': {'form_window':6, 'form_cap':0.15, 'trend_cap':0.08, 'venue_cap':0.05, 'ha_cap':0.10, 'wins_lo':13, 'wins_hi':87, 'score_blend':0.20},
+}
+DEFAULT_POS_PARAMS = POS_PARAMS['MID']
+
+# Ridge shrinkage constants
+VENUE_K   = 10   # shrinkage for venue factor
+HA_K      = 15   # shrinkage for home/away factor
+
+# Role change detection threshold
+ROLE_CHANGE_THRESHOLD = 0.15  # last 3 avg 15%+ above 20-game stat-implied avg
+
+# Shared ruck defaults
+SHARED_RUCK_DEFAULT_REDUCTION = 0.92   # 8% reduction when insufficient shared history
+SHARED_RUCK_MIN_GAMES         = 5      # minimum shared games to use historical avg
+
 DS_TEAM_MAP = {
     'ADE':'Adelaide','BRI':'Brisbane','CAR':'Carlton','COL':'Collingwood',
     'ESS':'Essendon','FRE':'Fremantle','GEE':'Geelong','GCS':'Gold Coast',
@@ -161,6 +181,23 @@ def winsorise(vals, lower=10, upper=90):
     if len(vals) < 4: return vals
     return np.clip(vals, np.percentile(vals, lower), np.percentile(vals, upper))
 
+def get_pos_params(position):
+    """Get position-specific model parameters."""
+    return POS_PARAMS.get(position, DEFAULT_POS_PARAMS)
+
+def ridge_shrink(raw_factor, n_games, k):
+    """Apply ridge-style shrinkage to a factor based on sample size."""
+    weight = n_games / (n_games + k)
+    return 1.0 + (raw_factor - 1.0) * weight
+
+def detect_role_change(recent_scores, stat_implied_avg):
+    """Detect if last 3 scores suggest a role change vs stat baseline."""
+    if len(recent_scores) < 3 or stat_implied_avg <= 0:
+        return False, 0.0
+    last3_avg = float(np.mean(recent_scores[-3:]))
+    gap = (last3_avg - stat_implied_avg) / stat_implied_avg
+    return gap >= ROLE_CHANGE_THRESHOLD, round(gap * 100, 1)
+
 def wavg(series):
     vals = winsorise(np.array(series, dtype=float))
     if not len(vals): return np.nan
@@ -189,7 +226,7 @@ def build_afltables_url(player_name):
 
 # ── DATA LOADING ──────────────────────────────────────────────
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False)
 def load_stats():
     sb = get_supabase()
     all_rows = []
@@ -208,7 +245,7 @@ def load_stats():
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     return df
 
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False)
 def load_roster():
     sb = get_supabase()
     resp = sb.table('player_roster').select('*').execute()
@@ -575,28 +612,39 @@ class AFLFantasyProjector:
 
         pos  = pd_['position'].iloc[-1]
         team = pd_['team'].iloc[-1]
+        pp   = get_pos_params(pos)
+
         r20  = pd_['fantasy_score'].tail(20).values
-        r5   = pd_['fantasy_score'].tail(5).values
+        r5   = pd_['fantasy_score'].tail(pp['form_window']).values
         r3   = pd_['fantasy_score'].tail(3).values
 
-        base   = wavg(r20)
-        median = round(float(np.median(winsorise(r20))), 1)
-        ff     = float(np.clip(np.mean(r5)/base, 0.80, 1.20)) if len(r5)>=3 and base>0 else 1.0
+        base   = wavg(winsorise(r20, pp['wins_lo'], pp['wins_hi']))
+        median = round(float(np.median(winsorise(r20, pp['wins_lo'], pp['wins_hi']))), 1)
+        ff     = float(np.clip(np.mean(r5)/base, 1.0-pp['form_cap'], 1.0+pp['form_cap'])) if len(r5)>=3 and base>0 else 1.0
         tf     = calc_trend(r20)
+        tf     = float(np.clip(tf, 1.0-pp['trend_cap'], 1.0+pp['trend_cap']))
         of     = self.opp_ratings.get(pos,{}).get(opponent, 1.0)
 
+        # Ridge-shrunk venue factor
         vf = 1.0
-        if 'venue' in pd_.columns and len(pd_[pd_['venue']==venue])>=5:
-            vf = float(np.clip(self.venue_ratings.get((player_name,venue),1.0), 0.93, 1.07))
+        if 'venue' in pd_.columns:
+            n_venue = len(pd_[pd_['venue']==venue])
+            if n_venue >= 1:
+                raw_vf = float(self.venue_ratings.get((player_name,venue), 1.0))
+                raw_vf = float(np.clip(raw_vf, 1.0-pp['venue_cap'], 1.0+pp['venue_cap']))
+                vf     = ridge_shrink(raw_vf, n_venue, VENUE_K)
 
+        # Ridge-shrunk home/away factor
         hf = 1.0
-        if 'is_home' in pd_.columns and len(pd_)>=10:
+        if 'is_home' in pd_.columns and len(pd_) >= 3:
             ha  = pd_[pd_['is_home']==True]['fantasy_score'].mean()
             aa  = pd_[pd_['is_home']==False]['fantasy_score'].mean()
             avg = pd_['fantasy_score'].mean()
-            if avg>0:
-                ref = ha if is_home else aa
-                hf  = float(np.clip(ref/avg, 0.85, 1.15)) if ref>0 else 1.0
+            n_ha = len(pd_[pd_['is_home']==(True if is_home else False)])
+            if avg > 0 and n_ha >= 1:
+                ref     = ha if is_home else aa
+                raw_hf  = float(np.clip(ref/avg, 1.0-pp['ha_cap'], 1.0+pp['ha_cap'])) if ref > 0 else 1.0
+                hf      = ridge_shrink(raw_hf, n_ha, HA_K)
 
         wmap = {'fine':1.00,'light_rain':0.97,'heavy_rain':0.92,'wind':0.95}
         wf   = wmap.get(weather,1.00)
@@ -622,6 +670,15 @@ class AFLFantasyProjector:
         std = float(pd_['fantasy_score'].tail(10).std() or proj*0.25)
         cv  = std/proj if proj>0 else 1
 
+        # Role change detection
+        stat_implied = sum(
+            wavg(pd_[stat].tail(20).values) * w
+            for stat, w in [('kicks',3),('handballs',2),('marks',3),('tackles',4),
+                           ('goals',6),('behinds',1),('hit_outs',1)]
+            if stat in pd_.columns
+        )
+        role_change, role_change_pct = detect_role_change(r3, stat_implied)
+
         return {
             'player':player_name,'team':team,'position':pos,
             'opponent':opponent,'venue':venue,'is_home':is_home,'weather':weather,
@@ -636,6 +693,7 @@ class AFLFantasyProjector:
             'opp_factor':round(of,3),'venue_factor':round(vf,3),
             'home_away_factor':round(hf,3),'weather_factor':round(wf,3),
             'tog_factor':round(tgf,3),'expected_tog':round(exp_tog*100,1),
+            'role_change':role_change,'role_change_pct':role_change_pct,
         }
 
     def project_stat(self, player_name, opponent, is_home, weather, injury_override,
@@ -877,21 +935,40 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     # Replace fantasy projection with implied_fantasy from stat model
     if not df_stat.empty and 'implied_fantasy' in df_stat.columns:
         impl = df_stat.set_index('player')['implied_fantasy'].to_dict()
+        # Position-specific blend ratios (score_blend = weight given to score model)
+        BLEND = {'MID':0.40, 'DEF':0.35, 'FWD':0.55, 'RUC':0.20}
+
         def update_proj(row):
-            p = row['player']
+            p   = row['player']
+            pos = row.get('position', 'MID')
+            score_w = BLEND.get(pos, 0.40)
+            stat_w  = 1.0 - score_w
+
             if p in impl and impl[p] > 0:
-                orig = row['projection_score'] if row.get('projection_score', 0) > 0 else 1.0
-                scale = impl[p] / orig
-                row['projection_stat'] = round(impl[p], 1)
-                row['floor_stat']      = round(row['floor']   * scale, 1)
+                p_score = row.get('projection_score', row['projection'])
+                p_stat  = impl[p]
+                orig    = p_score if p_score > 0 else 1.0
+                scale   = p_stat / orig
+
+                # Store both
+                row['projection_stat'] = round(p_stat, 1)
+                row['floor_stat']      = round(row['floor'] * scale, 1)
                 row['ceiling_stat']    = round(row['ceiling'] * scale, 1)
-                row['projection']      = round(impl[p], 1)  # default to stat-driven
-                row['floor']           = row['floor_stat']
-                row['ceiling']         = row['ceiling_stat']
+                row['floor_score']     = row.get('floor_score', row['floor'])
+                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
+
+                # Blended projection
+                blended = round(stat_w * p_stat + score_w * p_score, 1)
+                b_scale = blended / orig if orig > 0 else 1.0
+                row['projection'] = blended
+                row['floor']      = round(row['floor_score'] * b_scale, 1)
+                row['ceiling']    = round(row['ceiling_score'] * b_scale, 1)
             else:
                 row['projection_stat'] = row['projection']
                 row['floor_stat']      = row['floor']
                 row['ceiling_stat']    = row['ceiling']
+                row['floor_score']     = row.get('floor_score', row['floor'])
+                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
             return row
         df_proj = df_proj.apply(update_proj, axis=1)
         df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
@@ -1071,9 +1148,11 @@ def main():
         st.header("Generate Projections")
 
         if st.session_state.df_stats is None:
-            df_stats = load_stats()
+            with st.spinner("Loading player stats from database..."):
+                df_stats = load_stats()
             if not df_stats.empty:
                 st.session_state.df_stats = df_stats
+                st.success(f"✅ Loaded {len(df_stats):,} records for {df_stats['name'].nunique()} players")
 
         if st.session_state.df_stats is None or st.session_state.df_stats.empty:
             st.warning("No player stats loaded. Go to **Add Round Data** to scrape stats first.")
@@ -1140,11 +1219,15 @@ def main():
                 players, out_players = parse_draftstars_csv(ds_file.read())
                 st.session_state.ds_players         = players
                 st.session_state.out_players        = out_players
+                st.session_state.ds_file_name       = ds_file.name
                 st.session_state.inflate_set        = set()
                 st.session_state.manual_role_boosts = {}
                 st.success(f"✅ {len(players)} named players · {len(out_players)} OUT")
             except Exception as e:
                 st.error(f"Error parsing CSV: {e}")
+        elif st.session_state.ds_players is not None:
+            name = st.session_state.get('ds_file_name', 'previously uploaded file')
+            st.info(f"📋 Using {name} ({len(st.session_state.ds_players)} players). Upload a new CSV to change.")
 
         # ── 3. WEATHER ────────────────────────────────────────
         if st.session_state.fixtures:
@@ -1518,6 +1601,12 @@ def main():
         if 'role_factor' in df.columns and (df['role_factor'] != 1.0).any():
             display_cols.append('role_factor')
 
+        # Role change flag
+        if 'role_change' in df.columns and df['role_change'].any():
+            rc_players = df[df['role_change']==True]['player'].tolist()
+            if rc_players:
+                st.warning(f"⚠️ Possible role change detected: {', '.join(rc_players[:5])}{'...' if len(rc_players)>5 else ''} — last 3 scores significantly above stat baseline. Review on Stat Lines page.")
+
         st.dataframe(df[display_cols], use_container_width=True, height=500)
 
         st.markdown("---")
@@ -1530,7 +1619,12 @@ def main():
 
         with col2:
             if st.session_state.df_stat_proj is not None:
-                csv2 = st.session_state.df_stat_proj.to_csv(index=False).encode()
+                df_stat_export = st.session_state.df_stat_proj.copy()
+                # Add team column from df_proj
+                if st.session_state.df_proj is not None and 'team' in st.session_state.df_proj.columns:
+                    team_map = st.session_state.df_proj.set_index('player')['team'].to_dict()
+                    df_stat_export.insert(1, 'team', df_stat_export['player'].map(team_map))
+                csv2 = df_stat_export.to_csv(index=False).encode()
                 st.download_button("📥 Export stat projections CSV", csv2, f"AFL_Stat_Proj_{rl}.csv", "text/csv")
 
         with col3:
@@ -1539,12 +1633,14 @@ def main():
                 df_s = st.session_state.df_stat_proj
                 with pd.ExcelWriter(buf, engine='openpyxl') as writer:
                     for sheet, proj_col, mean_col, lines, prefix in [
-                        ('Disposals','disp_proj','disp_mean',DISPOSAL_LINES,'disposals'),
-                        ('Kicks',    'kick_proj','kick_mean', KICK_LINES,   'kicks'),
-                        ('Handballs','hb_proj',  'hb_mean',   HANDBALL_LINES,'handballs'),
-                        ('Marks',    'mark_proj','mark_mean', MARK_LINES,   'marks'),
-                        ('Tackles',  'tackle_proj','tackle_mean',TACKLE_LINES,'tackles'),
-                        ('Hit Outs', 'ho_proj',  'ho_mean',   HITOUT_LINES, 'hit_outs'),
+                        ('Disposals','disp_proj',  'disp_median',  DISPOSAL_LINES, 'disposals'),
+                        ('Kicks',    'kick_proj',  'kick_median',  KICK_LINES,     'kicks'),
+                        ('Handballs','hb_proj',    'hb_median',    HANDBALL_LINES, 'handballs'),
+                        ('Marks',    'mark_proj',  'mark_median',  MARK_LINES,     'marks'),
+                        ('Tackles',  'tackle_proj','tackle_median',TACKLE_LINES,   'tackles'),
+                        ('Hit Outs', 'ho_proj',    'ho_median',    HITOUT_LINES,   'hit_outs'),
+                        ('Goals',    'goal_proj',  'goal_median',  GOAL_LINES,     'goals'),
+                        ('Behinds',  'behind_proj','behind_median',BEHIND_LINES,   'behinds'),
                     ]:
                         ou_cols = [f'{prefix}_over_{l}' for l in lines if f'{prefix}_over_{l}' in df_s.columns]
                         base    = ['player','position']
@@ -1603,6 +1699,9 @@ def main():
                     f"Role inflation applied: **{'+' if boost_pct > 0 else ''}{boost_pct}%** "
                     f"(factor {r['role_factor']})"
                 )
+
+            if r.get('role_change'):
+                st.warning(f"⚠️ Possible role change — last 3 scores are {r.get('role_change_pct',0):.1f}% above stat baseline. Consider using injury slider to manually adjust.")
 
             st.markdown("**Factors applied**")
             fc1,fc2,fc3 = st.columns(3)
@@ -2274,18 +2373,29 @@ def main():
             new_records = []
             players     = df_roster.to_dict('records')
 
+            # Filter out already-scraped players
+            to_scrape = []
             for i, player in enumerate(players):
+                name = player.get('ds_name') or player.get('name') or player.get('Name','')
+                if not name: continue
+                key = (name, season, str(round_num))
+                if key in existing_keys:
+                    log_lines.append(f"[skip] {name} — already have Rd {round_num}")
+                else:
+                    to_scrape.append(player)
+            log_area.code(f"Skipping {len(players)-len(to_scrape)} already scraped. Scraping {len(to_scrape)} players...")
+
+            # Parallel scraping with 5 concurrent workers
+            import concurrent.futures
+            import threading
+            lock = threading.Lock()
+            total = len(to_scrape)
+            done  = [0]
+
+            def scrape_one(player):
                 name = player.get('ds_name') or player.get('name') or player.get('Name','')
                 team = player.get('team') or player.get('Team','')
                 pos  = player.get('position') or player.get('Position','MID')
-                if not name: continue
-
-                key = (name, season, str(round_num))
-                if key in existing_keys:
-                    log_lines.append(f"[{i+1}/{len(players)}] {name} — already have Rd {round_num}")
-                    log_area.code('\n'.join(log_lines[-50:]))
-                    continue
-
                 records, status = scrape_with_fallbacks(
                     name, team, pos, [season], venue_lookup, is_home_lookup
                 )
@@ -2293,14 +2403,26 @@ def main():
                     r for r in records
                     if str(r['round'])==str(round_num) and r['season']==season
                 ]
+                with lock:
+                    done[0] += 1
+                    if round_recs:
+                        fs = round_recs[0]['fantasy_score']
+                        return round_recs, f"[{done[0]}/{total}] {name} ✓  score={fs}"
+                    else:
+                        return [], f"[{done[0]}/{total}] {name} — {status}"
 
-                if round_recs:
-                    new_records.extend(round_recs)
-                    fs = round_recs[0]['fantasy_score']
-                    log_lines.append(f"[{i+1}/{len(players)}] {name} ✓  score={fs}")
-                else:
-                    log_lines.append(f"[{i+1}/{len(players)}] {name} — {status}")
-                log_area.code('\n'.join(log_lines[-50:]))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = {executor.submit(scrape_one, p): p for p in to_scrape}
+                for future in concurrent.futures.as_completed(futures):
+                    try:
+                        recs, msg = future.result()
+                        new_records.extend(recs)
+                        log_lines.append(msg)
+                        log_area.code('\n'.join(log_lines[-50:]))
+                    except Exception as e:
+                        name = futures[future].get('ds_name','?')
+                        log_lines.append(f"[error] {name}: {e}")
+                        log_area.code('\n'.join(log_lines[-50:]))
 
             if new_records:
                 save_stats_to_supabase(new_records)
