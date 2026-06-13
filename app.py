@@ -1387,7 +1387,25 @@ def main():
             if ruc_players:
                 st.markdown("**RUC arrangement**")
                 st.caption("Flag shared ruck arrangements. Uses historical solo/shared averages when 5+ shared games available, otherwise applies 8% reduction.")
+
+                # Identify RUC1 per team by highest average hit outs
+                ruc1_per_team = {}
                 for ruc in ruc_players:
+                    team = st.session_state.ds_players[
+                        st.session_state.ds_players['ds_name']==ruc
+                    ]['team'].iloc[0] if len(st.session_state.ds_players[st.session_state.ds_players['ds_name']==ruc]) else None
+                    if not team: continue
+                    pd_ruc = st.session_state.df_stats[
+                        (st.session_state.df_stats['name']==ruc) &
+                        (st.session_state.df_stats['tog_pct']>=0.45)
+                    ]
+                    avg_ho = float(pd_ruc['hit_outs'].mean()) if len(pd_ruc) > 0 else 0.0
+                    if team not in ruc1_per_team or avg_ho > ruc1_per_team[team][1]:
+                        ruc1_per_team[team] = (ruc, avg_ho)
+                ruc1_names = {v[0] for v in ruc1_per_team.values()}
+
+                for ruc in ruc_players:
+                    if ruc not in ruc1_names: continue
                     pd_ruc = st.session_state.df_stats[
                         (st.session_state.df_stats['name']==ruc) &
                         (st.session_state.df_stats['tog_pct']>=0.45)
