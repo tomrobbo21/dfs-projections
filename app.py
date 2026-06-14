@@ -706,7 +706,9 @@ class AFLFantasyProjector:
     def project_stat(self, player_name, opponent, is_home, weather, injury_override,
                      tog_override, factor_weights, opp_stat_ratings):
         fw  = factor_weights or {}
-        pd_ = self.df[self.df['name']==player_name].copy().sort_values(['season','round'])
+        pd_ = self.df[self.df['name']==player_name].copy()
+        pd_['_rs'] = pd_['round'].apply(lambda r: int(r) if str(r).isdigit() else 999)
+        pd_ = pd_.sort_values(['season','_rs']).drop(columns='_rs')
         if not len(pd_): return None
         pd_ = pd_[pd_['tog_pct']>=0.45].copy()
         if not len(pd_): return None
