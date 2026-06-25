@@ -198,8 +198,8 @@ def detect_role_change(recent_scores, stat_implied_avg):
     gap = (last3_avg - stat_implied_avg) / stat_implied_avg
     return gap >= ROLE_CHANGE_THRESHOLD, round(gap * 100, 1)
 
-def wavg(series):
-    vals = winsorise(np.array(series, dtype=float))
+def wavg(series, lower=10, upper=90):
+    vals = winsorise(np.array(series, dtype=float), lower, upper)
     if not len(vals): return np.nan
     w = np.exp(np.linspace(-1, 0, len(vals)))
     return float(np.dot(vals, w / w.sum()))
@@ -211,8 +211,8 @@ def wavg_raw(series):
     w = np.exp(np.linspace(-1, 0, len(vals)))
     return float(np.dot(vals, w / w.sum()))
 
-def calc_trend(series):
-    vals = winsorise(np.array(series, dtype=float))
+def calc_trend(series, lower=10, upper=90, no_wins=False):
+    vals = np.array(series, dtype=float) if no_wins else winsorise(np.array(series, dtype=float), lower, upper)
     if len(vals) < 5: return 1.0
     sl, _, _, p, _ = scipy_stats.linregress(np.arange(len(vals)), vals)
     m = np.mean(vals)
@@ -462,13 +462,20 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                         except: pass
                         break
                 venue = 'Unknown'; is_home = False
+                t = DS_TEAM_MAP.get(team, team)
                 if game_date:
-                    t = DS_TEAM_MAP.get(team, team)
                     venue = (venue_lookup.get((t, opponent, game_date)) or
                              venue_lookup.get((opponent, t, game_date)) or 'Unknown')
                     if is_home_lookup:
                         is_home = (is_home_lookup.get((t, opponent, game_date)) or
                                    is_home_lookup.get((opponent, t, game_date)) or False)
+                if venue == 'Unknown':
+                    rnd_key = round_num if isinstance(round_num, str) else str(round_num)
+                    venue = (venue_lookup.get((t, opponent, rnd_key, season_int)) or
+                             venue_lookup.get((opponent, t, rnd_key, season_int)) or 'Unknown')
+                    if venue != 'Unknown' and is_home_lookup:
+                        is_home = (is_home_lookup.get((t, opponent, rnd_key, season_int)) or
+                                   is_home_lookup.get((opponent, t, rnd_key, season_int)) or False)
                 def gi(i):
                     if i >= len(cells) or not cells[i].strip(): return 0
                     try: return max(0, int(float(cells[i].strip())))
@@ -625,10 +632,10 @@ class AFLFantasyProjector:
         r5   = pd_['fantasy_score'].tail(pp['form_window']).values
         r3   = pd_['fantasy_score'].tail(3).values
 
-        base   = wavg(winsorise(r20, pp['wins_lo'], pp['wins_hi']))
+        base   = wavg(r20, pp['wins_lo'], pp['wins_hi'])
         median = round(float(np.median(winsorise(r20, pp['wins_lo'], pp['wins_hi']))), 1)
         ff     = float(np.clip(np.mean(r5)/base, 1.0-pp['form_cap'], 1.0+pp['form_cap'])) if len(r5)>=3 and base>0 else 1.0
-        tf     = calc_trend(r20)
+        tf     = calc_trend(r20, pp['wins_lo'], pp['wins_hi'])
         tf     = float(np.clip(tf, 1.0-pp['trend_cap'], 1.0+pp['trend_cap']))
         of     = self.opp_ratings.get(pos,{}).get(opponent, 1.0)
 
@@ -704,7 +711,7 @@ class AFLFantasyProjector:
         }
 
     def project_stat(self, player_name, opponent, is_home, weather, injury_override,
-                     tog_override, factor_weights, opp_stat_ratings):
+                     tog_override, factor_weights, opp_stat_ratings, role_boost=1.0):
         fw  = factor_weights or {}
         pd_ = self.df[self.df['name']==player_name].copy()
         pd_['_rs'] = pd_['round'].apply(lambda r: int(r) if str(r).isdigit() else 999)
@@ -713,14 +720,15 @@ class AFLFantasyProjector:
         pd_ = pd_[pd_['tog_pct']>=0.45].copy()
         if not len(pd_): return None
         position = pd_['position'].iloc[-1]
-        r20 = pd_.tail(20); r5 = pd_.tail(5); r3 = pd_.tail(3)
+        pp  = get_pos_params(position)
+        r20 = pd_.tail(20); r5 = pd_.tail(pp['form_window']); r3 = pd_.tail(3)
 
         exp_tog  = float(tog_override) if tog_override else float(pd_['tog_pct'].tail(5).mean() or 0.85)
         avg_tog  = float(pd_['tog_pct'].mean())
         tog_f    = float(np.clip(exp_tog/avg_tog, 0.70, 1.00)) if avg_tog>0 else 1.0
         inj_f    = float(injury_override) if injury_override else 1.0
-        kick_avg = wavg(r20['kicks'].values)
-        hb_avg   = wavg(r20['handballs'].values)
+        kick_avg = wavg_raw(r20['kicks'].values)
+        hb_avg   = wavg_raw(r20['handballs'].values)
 
         SCORING_WEIGHTS = {
             'kicks':3,'handballs':2,'marks':3,'tackles':4,
@@ -748,7 +756,7 @@ class AFLFantasyProjector:
             avg5    = float(r5[stat].mean())
             avg3    = float(r3[stat].mean())
             form    = float(np.clip(avg5/base, 0.80, 1.20)) if base > 0 else 1.0
-            tr      = calc_trend(r20[stat].values)
+            tr      = calc_trend(r20[stat].values, no_wins=True)
             opp_f   = opp_stat_ratings.get(stat, {}).get(position, {}).get(opponent, 1.0)
 
             # Weather factors
@@ -775,9 +783,9 @@ class AFLFantasyProjector:
             adj_tr   = 0.80 + 0.20 * (1.0 + (tr   - 1.0) * fw.get('trend', 1.0))
 
             # wavg-based projection (primary — used for fantasy score sum)
-            proj_wavg = round(max(0, base    * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f), 2)
+            proj_wavg = round(max(0, base    * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f * role_boost), 2)
             # median-based projection (kept for reference/betting)
-            proj_med  = round(max(0, med_raw * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f), 1)
+            proj_med  = round(max(0, med_raw * adj_form * adj_tr * adj_opp * adj_wf * adj_tog * inj_f * role_boost), 1)
 
             std = float(pd_[stat].tail(10).std() or proj_wavg * 0.30)
             results[stat] = {
@@ -824,9 +832,6 @@ class AFLFantasyProjector:
             'implied_fantasy': implied_fantasy,
             **results
         }
-
-
-        return {'player':player_name,'position':position,**results}
 
 
 def build_opp_stat_ratings(df_stats):
@@ -889,10 +894,15 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     df_proj = pd.DataFrame(rows).sort_values('projection',ascending=False).reset_index(drop=True)
     df_proj.index += 1
 
-    df_proj['role_factor'] = df_proj['player'].map(role_factors).fillna(1.0)
-    df_proj['projection']  = (df_proj['projection']*df_proj['role_factor']).round(1)
-    df_proj['floor']       = (df_proj['floor']     *df_proj['role_factor']).round(1)
-    df_proj['ceiling']     = (df_proj['ceiling']   *df_proj['role_factor']).round(1)
+    df_proj['role_factor']   = df_proj['player'].map(role_factors).fillna(1.0)
+    df_proj['projection']    = (df_proj['projection']*df_proj['role_factor']).round(1)
+    df_proj['floor']         = (df_proj['floor']     *df_proj['role_factor']).round(1)
+    df_proj['ceiling']       = (df_proj['ceiling']   *df_proj['role_factor']).round(1)
+    # role_factor must also apply to the score-model values used downstream in the blend,
+    # otherwise manual boosts get silently discarded when the stat/score blend recomputes 'projection'
+    df_proj['projection_score'] = (df_proj['projection_score']*df_proj['role_factor']).round(1)
+    df_proj['floor_score']      = (df_proj['floor_score']     *df_proj['role_factor']).round(1)
+    df_proj['ceiling_score']    = (df_proj['ceiling_score']   *df_proj['role_factor']).round(1)
 
     if 'salary' in ds_players.columns:
         sal = ds_players.set_index('ds_name')['salary'].to_dict()
@@ -917,6 +927,7 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
             tog_override=tog_map.get(player),
             factor_weights=factor_weights,
             opp_stat_ratings=opp_stat_ratings,
+            role_boost=role_factors.get(player, 1.0),
         )
         if r:
                 row = {
@@ -1028,9 +1039,6 @@ def calc_with_without(df_stats, missing_player, missing_team, named_players_df):
 
     # Out rounds = team played but missing player didn't (or had very low TOG)
     out_rounds = (team_rounds - mp_played) | mp_low_tog
-
-    # Named teammates only
-    named_set = set(named_players_df['ds_name'].tolist())
 
     rows = []
     for _, tm_row in named_players_df.iterrows():
@@ -1422,7 +1430,6 @@ def main():
 
             # Threshold check: 2 seasons, TOG >= 0.45, avg >= 80
             recent_2s       = sorted(df_s['season'].unique())[-2:]
-            recent_2s_data  = df_s[df_s['season'].isin(recent_2s) & (df_s['tog_pct'] >= 0.45) if 'tog_pct' in df_s.columns else df_s['season'].isin(recent_2s)]
 
             # Display avg: 2026 only, TOG >= 0.45
             df_2026_tog = df_s[(df_s['season'] == 2026) & (df_s['tog_pct'] >= 0.45)]
@@ -1584,14 +1591,6 @@ def main():
             return
 
         df = st.session_state.df_proj.copy()
-
-        # DEBUG
-        tm = df[df['player']=='Tom McCartin']
-        if len(tm):
-            p_score = tm['projection_score'].values[0] if 'projection_score' in tm.columns else 'MISSING'
-            p_stat  = tm['projection_stat'].values[0]  if 'projection_stat'  in tm.columns else 'MISSING'
-            p_proj  = tm['projection'].values[0]
-            st.warning(f"DEBUG McCartin: projection={p_proj}, projection_score={p_score}, projection_stat={p_stat}")
 
         # Method toggle
         method = st.radio(
@@ -1866,7 +1865,7 @@ def main():
                     (df_stats['name']==sel_player) & (df_stats['season']==2026) & (df_stats['tog_pct']>=0.45)
                 ]
                 mp_avg_2026 = round(float(mp_2026['fantasy_score'].mean()), 1) if len(mp_2026)>=1 else '–'
-                st.markdown(f"**{sel_player}** · {sel_team} · 2026 avg {mp_avg_2026} · {len(out_rounds)} out rounds (2025–2026)")
+                st.markdown(f"**{sel_player}** · {sel_team} · 2026 avg {mp_avg_2026} · {len(out_rounds)} out rounds ({sel_season_range})")
 
                 if len(out_rounds) < 3:
                     st.warning(f"Only {len(out_rounds)} out round(s) available in last 2 seasons — insufficient data for reliable analysis.")
@@ -2076,14 +2075,14 @@ def main():
                             proj_val  = float(fp_row['projection'])
                             floor_val = float(fp_row['floor'])
                             ceil_val  = float(fp_row['ceiling'])
-                    avg_5     = float(fp_row['form_5_avg']) if fp_row.get('form_5_avg') is not None else None
-                    avg_20    = float(fp_row['base_avg'])
-                    # std from raw history (tail 10)
-                    pd_tog   = df_stats[
-                        (df_stats['name'] == pname) & (df_stats['tog_pct'] >= 0.45)
-                    ]
-                    std_val  = float(pd_tog['fantasy_score'].tail(10).std() or proj_val * 0.25)
-                    games_n  = min(20, len(pd_tog))
+                        avg_5     = float(fp_row['form_5_avg']) if fp_row.get('form_5_avg') is not None else None
+                        avg_20    = float(fp_row['base_avg'])
+                        # std from raw history (tail 10)
+                        pd_tog   = df_stats[
+                            (df_stats['name'] == pname) & (df_stats['tog_pct'] >= 0.45)
+                        ]
+                        std_val  = float(pd_tog['fantasy_score'].tail(10).std() or proj_val * 0.25)
+                        games_n  = min(20, len(pd_tog))
             else:
                 prefix = STAT_PREFIX[stat_key]
                 if pname in stat_lookup.index:
@@ -2148,18 +2147,13 @@ def main():
                 for p in valid
             ])
 
-        # Winner = player with highest value; ties split equally
-        winners     = samples.argmax(axis=1)           # index of winner per sim
-        tie_mask    = (samples == samples.max(axis=1, keepdims=True)).sum(axis=1) > 1
-        win_counts  = np.zeros(len(valid))
-
-        for i in range(len(valid)):
-            solo_wins = np.sum((winners == i) & ~tie_mask)
-            tie_wins  = np.sum(tie_mask & (samples[:, i] == samples.max(axis=1))) / \
-                        (samples == samples.max(axis=1, keepdims=True)).sum(axis=1)[
-                            tie_mask & (samples[:, i] == samples.max(axis=1))
-                        ].mean() if np.any(tie_mask & (samples[:, i] == samples.max(axis=1))) else 0
-            win_counts[i] = solo_wins + tie_wins
+        # Winner = player with highest value; ties split equally.
+        # Each sim contributes exactly 1.0 of win credit total, split evenly among
+        # however many players tied for the max in that sim.
+        is_max          = samples == samples.max(axis=1, keepdims=True)
+        n_winners_per_sim = is_max.sum(axis=1)
+        win_credit      = is_max / n_winners_per_sim[:, None]
+        win_counts      = win_credit.sum(axis=0)
 
         win_probs = win_counts / n_sims
 
@@ -2303,7 +2297,7 @@ def main():
     # ══════════════════════════════════════════════════════════
     elif page == "🔗 Stacking":
         st.header("🔗 Stacking Tool")
-        st.markdown("Find players who historically boom together. Sorted by boom frequency — how often both players exceeded their individual ceiling in the same game.")
+        st.markdown("Pick a player to see their same-game stack partners ranked by boom frequency.")
 
         if st.session_state.df_proj is None or st.session_state.df_proj.empty:
             st.info("Run projections first.")
@@ -2327,7 +2321,6 @@ def main():
             pivot_slate   = pivot[[c for c in slate_players if c in pivot.columns]]
             corr_matrix   = pivot_slate.corr(method='pearson')
 
-            # Individual boom thresholds: 80th percentile of last 2 seasons
             boom_thresholds = {}
             for pname in slate_players:
                 pd_p = recent[recent['name']==pname]['fantasy_score']
@@ -2337,210 +2330,61 @@ def main():
             opp_map  = df_proj.set_index('player')['opponent'].to_dict()
             proj_map = df_proj.set_index('player')['projection'].to_dict()
 
-            def shared_games_data(players_list):
-                """Return DataFrame of games where all players in list have scores."""
-                sub = recent[recent['name'].isin(players_list)]
-                pivot_sub = sub.pivot_table(index='game_key', columns='name', values='fantasy_score', aggfunc='first')
-                return pivot_sub.dropna()
-
             def calc_pair_stats(p1, p2):
-                """Return (corr, boom_pct, boom_count, n_shared) for a pair."""
                 if p1 not in corr_matrix.columns or p2 not in corr_matrix.columns:
                     return None, 0.0, 0, 0
                 corr = corr_matrix.loc[p1, p2]
                 if np.isnan(corr): return None, 0.0, 0, 0
-                shared = shared_games_data([p1, p2])
-                n_shared = len(shared)
+                sub = recent[recent['name'].isin([p1, p2])]
+                pivot_sub = sub.pivot_table(index='game_key', columns='name', values='fantasy_score', aggfunc='first').dropna()
+                n_shared = len(pivot_sub)
                 if n_shared < 5: return corr, 0.0, 0, n_shared
                 t1 = boom_thresholds.get(p1, 90.0)
                 t2 = boom_thresholds.get(p2, 90.0)
-                boom_count = int(((shared[p1] >= t1) & (shared[p2] >= t2)).sum())
+                boom_count = int(((pivot_sub[p1] >= t1) & (pivot_sub[p2] >= t2)).sum())
                 boom_pct   = round(boom_count / n_shared * 100, 1)
                 return corr, boom_pct, boom_count, n_shared
 
-            def calc_group_stats(players_list):
-                """Return (avg_corr, boom_pct, boom_count, n_shared) for 3-4 player group."""
-                shared = shared_games_data(players_list)
-                n_shared = len(shared)
-                if n_shared < 5: return 0.0, 0.0, 0, n_shared
-                # Avg pairwise correlation
-                pairs = [(players_list[i], players_list[j])
-                         for i in range(len(players_list))
-                         for j in range(i+1, len(players_list))]
-                corrs = []
-                for pa, pb in pairs:
-                    if pa in corr_matrix.columns and pb in corr_matrix.columns:
-                        c = corr_matrix.loc[pa, pb]
-                        if not np.isnan(c): corrs.append(c)
-                avg_corr = round(float(np.mean(corrs)), 3) if corrs else 0.0
-                # All players exceed their boom threshold in same game
-                boom_mask = pd.Series([True]*len(shared), index=shared.index)
-                for p in players_list:
-                    if p in shared.columns:
-                        boom_mask = boom_mask & (shared[p] >= boom_thresholds.get(p, 90.0))
-                boom_count = int(boom_mask.sum())
-                boom_pct   = round(boom_count / n_shared * 100, 1)
-                return avg_corr, boom_pct, boom_count, n_shared
-
-            tab1, tab2, tab3 = st.tabs(["Same Team Stacks", "Same Game Stacks", "Pick a Player"])
-
-            def render_stack_table(rows, key_suffix):
-                if not rows:
-                    return False
-                df_s = pd.DataFrame(rows)
-                df_s = df_s[
-                    (df_s['Boom games'] >= 2) &
-                    (df_s['Correlation'] >= 0.15)
-                ].sort_values(['Boom %', 'Correlation'], ascending=[False, False]).reset_index(drop=True)
-                df_s.index += 1
-                if df_s.empty: return False
-                st.dataframe(
-                    df_s,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        'Proj':        st.column_config.NumberColumn(format="%.1f"),
-                        'Combined':    st.column_config.NumberColumn(format="%.1f"),
-                        'Correlation': st.column_config.NumberColumn(format="%.3f"),
-                        'Boom %':      st.column_config.NumberColumn('Boom %', format="%.1f"),
-                        'Boom games':  st.column_config.NumberColumn('Boom games', format="%d"),
-                        'Shared games':st.column_config.NumberColumn('Shared games', format="%d"),
-                    }
-                )
-                return True
-
-            def build_pairs(filter_fn):
-                rows = []
-                players = [p for p in slate_players if p in corr_matrix.columns]
-                seen = set()
-                for i, p1 in enumerate(players):
-                    for p2 in players[i+1:]:
-                        if not filter_fn(p1, p2): continue
-                        key = tuple(sorted([p1, p2]))
-                        if key in seen: continue
-                        seen.add(key)
-                        corr, boom_pct, boom_count, n_shared = calc_pair_stats(p1, p2)
-                        if corr is None: continue
-                        rows.append({
-                            'Player 1':     p1,
-                            'Player 2':     p2,
-                            'Proj 1':       round(proj_map.get(p1, 0), 1),
-                            'Proj 2':       round(proj_map.get(p2, 0), 1),
-                            'Combined':     round((proj_map.get(p1,0) or 0) + (proj_map.get(p2,0) or 0), 1),
-                            'Correlation':  round(corr, 3),
-                            'Boom %':       boom_pct,
-                            'Boom games':   boom_count,
-                            'Shared games': n_shared,
-                        })
-                return rows
-
-            def build_groups(filter_fn, size):
-                rows = []
-                players = [p for p in slate_players if p in corr_matrix.columns]
-                from itertools import combinations
-                seen = set()
-                for combo in combinations(players, size):
-                    if not all(filter_fn(combo[0], p) for p in combo[1:]): continue
-                    key = tuple(sorted(combo))
-                    if key in seen: continue
-                    seen.add(key)
-                    avg_corr, boom_pct, boom_count, n_shared = calc_group_stats(list(combo))
-                    if boom_count < 2 or avg_corr < 0.15: continue
-                    combined = round(sum(proj_map.get(p, 0) or 0 for p in combo), 1)
-                    row = {f'Player {i+1}': combo[i] for i in range(size)}
-                    row.update({
-                        'Combined':     combined,
-                        'Correlation':  avg_corr,
+            sel_stack = st.selectbox("Select player", [""] + slate_players, key="stack_player_select")
+            if sel_stack:
+                stack_rows = []
+                for p2 in slate_players:
+                    if p2 == sel_stack: continue
+                    same_game = (opp_map.get(sel_stack) == team_map.get(p2) or
+                                 opp_map.get(p2) == team_map.get(sel_stack))
+                    if not same_game: continue
+                    corr, boom_pct, boom_count, n_shared = calc_pair_stats(sel_stack, p2)
+                    if corr is None: continue
+                    stack_rows.append({
+                        'Partner':      p2,
+                        'Team':         team_map.get(p2, ''),
+                        'Proj':         round(proj_map.get(p2, 0), 1),
+                        'Combined':     round((proj_map.get(sel_stack, 0) or 0) + (proj_map.get(p2, 0) or 0), 1),
+                        'Correlation':  round(corr, 3),
                         'Boom %':       boom_pct,
                         'Boom games':   boom_count,
                         'Shared games': n_shared,
                     })
-                    rows.append(row)
-                return rows
-
-            with tab1:
-                same_team_fn = lambda p1, p2: team_map.get(p1) == team_map.get(p2)
-
-                st.markdown("**Pairs**")
-                pair_rows = build_pairs(same_team_fn)
-                if not render_stack_table(pair_rows, 'st_pairs'):
-                    st.info("No same-team pairs meeting minimum thresholds (≥2 boom games, correlation ≥0.15, ≥5 shared games).")
-
-                st.markdown("**3-player stacks**")
-                trio_rows = build_groups(same_team_fn, 3)
-                if not render_stack_table(trio_rows, 'st_trios'):
-                    st.info("No same-team 3-player stacks meeting minimum thresholds.")
-
-                st.markdown("**4-player stacks**")
-                quad_rows = build_groups(same_team_fn, 4)
-                if not render_stack_table(quad_rows, 'st_quads'):
-                    st.info("No same-team 4-player stacks meeting minimum thresholds.")
-
-            with tab2:
-                same_game_fn = lambda p1, p2: (
-                    team_map.get(p1) != team_map.get(p2) and
-                    (opp_map.get(p1) == team_map.get(p2) or opp_map.get(p2) == team_map.get(p1))
-                )
-
-                st.markdown("**Pairs**")
-                pair_rows = build_pairs(same_game_fn)
-                if not render_stack_table(pair_rows, 'sg_pairs'):
-                    st.info("No same-game pairs meeting minimum thresholds.")
-
-                st.markdown("**3-player stacks**")
-                trio_rows = build_groups(same_game_fn, 3)
-                if not render_stack_table(trio_rows, 'sg_trios'):
-                    st.info("No same-game 3-player stacks meeting minimum thresholds.")
-
-                st.markdown("**4-player stacks**")
-                quad_rows = build_groups(same_game_fn, 4)
-                if not render_stack_table(quad_rows, 'sg_quads'):
-                    st.info("No same-game 4-player stacks meeting minimum thresholds.")
-
-            with tab3:
-                st.markdown("**Pick a player to see their best stack partners**")
-                sel_stack = st.selectbox("Select player", [""] + slate_players, key="stack_player_select")
-                if sel_stack:
-                    stack_rows = []
-                    for p2 in slate_players:
-                        if p2 == sel_stack: continue
-                        same_team = team_map.get(sel_stack) == team_map.get(p2)
-                        same_game = (opp_map.get(sel_stack) == team_map.get(p2) or
-                                     opp_map.get(p2) == team_map.get(sel_stack))
-                        if not (same_team or same_game): continue
-                        corr, boom_pct, boom_count, n_shared = calc_pair_stats(sel_stack, p2)
-                        if corr is None: continue
-                        stack_rows.append({
-                            'Partner':      p2,
-                            'Team':         team_map.get(p2,''),
-                            'Type':         'Same team' if same_team else 'Same game',
-                            'Proj':         round(proj_map.get(p2, 0), 1),
-                            'Combined':     round((proj_map.get(sel_stack,0) or 0) + (proj_map.get(p2,0) or 0), 1),
-                            'Correlation':  round(corr, 3) if corr else 0.0,
-                            'Boom %':       boom_pct,
-                            'Boom games':   boom_count,
-                            'Shared games': n_shared,
-                        })
-                    if stack_rows:
-                        df_pick = pd.DataFrame(stack_rows)
-                        df_pick = df_pick.sort_values(['Boom %','Correlation'], ascending=[False,False]).reset_index(drop=True)
-                        df_pick.index += 1
-                        st.markdown(f"**{sel_stack}** (proj: {round(proj_map.get(sel_stack,0),1)}) — stack partners:")
-                        st.dataframe(
-                            df_pick,
-                            use_container_width=True,
-                            hide_index=True,
-                            column_config={
-                                'Proj':         st.column_config.NumberColumn(format="%.1f"),
-                                'Combined':     st.column_config.NumberColumn(format="%.1f"),
-                                'Correlation':  st.column_config.NumberColumn(format="%.3f"),
-                                'Boom %':       st.column_config.NumberColumn('Boom %', format="%.1f"),
-                                'Boom games':   st.column_config.NumberColumn('Boom games', format="%d"),
-                                'Shared games': st.column_config.NumberColumn('Shared games', format="%d"),
-                            }
-                        )
-                    else:
-                        st.info("No stack partners found for this player in the current slate.")
+                if stack_rows:
+                    df_pick = pd.DataFrame(stack_rows)
+                    df_pick = df_pick.sort_values(['Boom %', 'Correlation'], ascending=[False, False]).reset_index(drop=True)
+                    df_pick.index += 1
+                    st.markdown(f"**{sel_stack}** (proj: {round(proj_map.get(sel_stack, 0), 1)}) — same-game stack partners:")
+                    st.dataframe(
+                        df_pick,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'Proj':         st.column_config.NumberColumn(format="%.1f"),
+                            'Combined':     st.column_config.NumberColumn(format="%.1f"),
+                            'Correlation':  st.column_config.NumberColumn(format="%.3f"),
+                            'Boom %':       st.column_config.NumberColumn('Boom %', format="%.1f"),
+                            'Boom games':   st.column_config.NumberColumn('Boom games', format="%d"),
+                            'Shared games': st.column_config.NumberColumn('Shared games', format="%d"),
+                        }
+                    )
+                else:
+                    st.info("No same-game stack partners found for this player.")
 
     # ══════════════════════════════════════════════════════════
     # ADD ROUND DATA PAGE
@@ -2636,18 +2480,25 @@ def main():
                 is_home_lookup = {}
                 if fix_resp.data:
                     for row in fix_resp.data:
-                        home = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
-                        away = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
+                        home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
+                        away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
+                        rnd   = str(row.get('Round Number',''))
+                        yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
                         try:
                             game_date = datetime.strptime(date_str.split(' ')[0], '%d/%m/%Y').date()
+                            venue_lookup[(home, away, game_date)] = venue
+                            venue_lookup[(away, home, game_date)] = venue
+                            is_home_lookup[(home, away, game_date)] = True
+                            is_home_lookup[(away, home, game_date)] = False
                         except:
-                            continue
-                        venue_lookup[(home, away, game_date)] = venue
-                        venue_lookup[(away, home, game_date)] = venue
-                        is_home_lookup[(home, away, game_date)] = True
-                        is_home_lookup[(away, home, game_date)] = False
+                            pass
+                        if rnd and yr:
+                            venue_lookup[(home, away, rnd, yr)]   = venue
+                            venue_lookup[(away, home, rnd, yr)]   = venue
+                            is_home_lookup[(home, away, rnd, yr)] = True
+                            is_home_lookup[(away, home, rnd, yr)] = False
 
             log_area  = st.empty()
             log_lines = []
