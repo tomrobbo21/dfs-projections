@@ -14,8 +14,13 @@ from supabase import create_client, Client
 # ── SUPABASE CLIENT ───────────────────────────────────────────
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except Exception:
+        import os
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
     return create_client(url, key)
 
 st.set_page_config(page_title="AFL Fantasy DFS", page_icon="🏉", layout="wide")
