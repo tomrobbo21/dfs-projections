@@ -157,8 +157,7 @@ NAME_CORRECTIONS = {
     'Jack Carroll':'Jack_Carroll1','Joshua Draper':'Josh_Draper',
     'Nicholas Madden':'Nick_Madden','Thomas Edwards':'Tom_Edwards',
     'William Hayes':'Will_Hayes1','William Edwards':'Will_Edwards',
-    'Hugo Hall-Kahan': 'Hugo_Hall-Kahan','Jack Dalton':'Jack_Dalton1',
-    'William McCabe': 'Will_McCabe', 'Matt Hill': 'Matt_Hill',
+    'Hugo Hall-Kahan': 'Hugo_Hall-Kahan',
 }
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -615,7 +614,7 @@ class AFLFantasyProjector:
                 'opponent':opponent,'venue':venue,'is_home':is_home,'weather':weather,
                 'projection':round(proj,1),'median':round(proj,1),
                 'floor':round(max(0,proj-1.5*std),1),'ceiling':round(proj+1.5*std,1),
-                'confidence':30.0,'variance':40.0,'base_avg':round(base,1),
+                'confidence':30.0,'variance':30.0,'base_avg':round(base,1),
                 'form_5_avg':None,'form_3_avg':None,
                 'form_factor':1.0,'trend_factor':1.0,'opp_factor':round(of,3),
                 'venue_factor':1.0,'home_away_factor':1.0,'weather_factor':round(wf,3),
@@ -682,8 +681,13 @@ class AFLFantasyProjector:
         proj = (base*(0.60+0.40*adj_ff)*(0.80+0.20*adj_tf)
                 *adj_of*adj_vf*adj_hf*adj_wf*adj_tgf*inj)
 
-        std = float(pd_['fantasy_score'].tail(10).std() or proj*0.25)
-        cv  = std/proj if proj>0 else 1
+        n_games = len(pd_)
+        low_sample = n_games < 3
+        if low_sample:
+            std = proj * 0.30
+        else:
+            std = float(pd_['fantasy_score'].tail(10).std() or proj*0.25)
+            cv  = std/proj if proj>0 else 1
 
         # Role change detection
         stat_implied = sum(
@@ -699,8 +703,8 @@ class AFLFantasyProjector:
             'opponent':opponent,'venue':venue,'is_home':is_home,'weather':weather,
             'projection':round(proj,1),'median':median,
             'floor':round(max(0,proj-1.5*std),1),'ceiling':round(proj+1.5*std,1),
-            'confidence':round(float(np.clip(1-cv*0.5,0.3,0.95))*100,1),
-            'variance':round(float(np.clip(cv*100,5,60)),1),
+            'confidence':30.0 if low_sample else round(float(np.clip(1-cv*0.5,0.3,0.95))*100,1),
+            'variance':30.0 if low_sample else round(float(np.clip(cv*100,5,60)),1),
             'base_avg':round(base,1),
             'form_5_avg':round(float(np.mean(r5)),1) if len(r5) else None,
             'form_3_avg':round(float(np.mean(r3)),1) if len(r3) else None,
@@ -1141,7 +1145,7 @@ def main():
     with st.sidebar:
         st.markdown("### 🏉 AFL Fantasy DFS")
         page = st.radio(
-            "",
+            "Navigation",
             ["📊 Projections","📋 Results","📈 Stat Lines","🔍 With/Without","🎯 Most X Stat","🔗 Stacking","⚙️ Add Round Data","🏟️ Opponent Ratings"],
             label_visibility="collapsed"
         )
