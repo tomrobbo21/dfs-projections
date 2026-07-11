@@ -953,7 +953,7 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
                     row[f'{prefix}_ceiling'] = d['ceiling']
                     row[f'{prefix}_avg_20']  = d['avg_20']
                     row[f'{prefix}_avg_5']   = d['avg_5']
-                    row.update(d['ou'])
+                    # O/U probability columns removed — no longer used
                 stat_rows.append(row)
 
     df_stat = pd.DataFrame(stat_rows).sort_values('disp_proj',ascending=False).reset_index(drop=True) if stat_rows else pd.DataFrame()
