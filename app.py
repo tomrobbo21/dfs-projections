@@ -1656,36 +1656,38 @@ def main():
         rl = st.session_state.round_label or 'Current'
 
         with col1:
-            csv1 = df.to_csv(index=False).encode()
-            st.download_button("📥 Export projections CSV", csv1, f"AFL_Projections_{rl}.csv", "text/csv")
+            if st.button("📥 Export projections CSV"):
+                csv1 = df.to_csv(index=False).encode()
+                st.download_button("📥 Download", csv1, f"AFL_Projections_{rl}.csv", "text/csv", key="proj_csv_dl")
 
         with col2:
             if st.session_state.df_stat_proj is not None and st.session_state.df_proj is not None:
-                df_proj_lookup = st.session_state.df_proj.set_index('player')
-                df_s = st.session_state.df_stat_proj.copy()
+                if st.button("📥 Export stat projections CSV"):
+                    df_proj_lookup = st.session_state.df_proj.set_index('player')
+                    df_s = st.session_state.df_stat_proj.copy()
 
-                condensed = pd.DataFrame({'Player': df_s['player']})
-                condensed['Team']       = df_s['player'].map(df_proj_lookup['team'])
-                condensed['Pos']        = df_s['position']
-                condensed['Projection'] = df_s['player'].map(df_proj_lookup['projection'])
-                condensed['Ceiling']    = df_s['player'].map(df_proj_lookup['ceiling'])
+                    condensed = pd.DataFrame({'Player': df_s['player']})
+                    condensed['Team']       = df_s['player'].map(df_proj_lookup['team'].to_dict()).fillna('')
+                    condensed['Pos']        = df_s['position']
+                    condensed['Projection'] = pd.to_numeric(df_s['player'].map(df_proj_lookup['projection'].to_dict()), errors='coerce')
+                    condensed['Ceiling']    = pd.to_numeric(df_s['player'].map(df_proj_lookup['ceiling'].to_dict()), errors='coerce')
 
-                for label, proj_col, median_col in [
-                    ('Disp',   'disp_proj',   'disp_median'),
-                    ('Kick',   'kick_proj',   'kick_median'),
-                    ('HB',     'hb_proj',     'hb_median'),
-                    ('Mark',   'mark_proj',   'mark_median'),
-                    ('Tackle', 'tackle_proj', 'tackle_median'),
-                    ('HO',     'ho_proj',     'ho_median'),
-                    ('Goal',   'goal_proj',   'goal_median'),
-                    ('Behind', 'behind_proj', 'behind_median'),
-                ]:
-                    condensed[f'{label} Proj']   = df_s[proj_col]   if proj_col   in df_s.columns else None
-                    condensed[f'{label} Median'] = df_s[median_col] if median_col in df_s.columns else None
+                    for label, proj_col, median_col in [
+                        ('Disp',   'disp_proj',   'disp_median'),
+                        ('Kick',   'kick_proj',   'kick_median'),
+                        ('HB',     'hb_proj',     'hb_median'),
+                        ('Mark',   'mark_proj',   'mark_median'),
+                        ('Tackle', 'tackle_proj', 'tackle_median'),
+                        ('HO',     'ho_proj',     'ho_median'),
+                        ('Goal',   'goal_proj',   'goal_median'),
+                        ('Behind', 'behind_proj', 'behind_median'),
+                    ]:
+                        condensed[f'{label} Proj']   = df_s[proj_col]   if proj_col   in df_s.columns else None
+                        condensed[f'{label} Median'] = df_s[median_col] if median_col in df_s.columns else None
 
-                condensed = condensed.sort_values('Projection', ascending=False).reset_index(drop=True)
-                csv2 = condensed.to_csv(index=False).encode()
-                st.download_button("📥 Export stat projections CSV", csv2, f"AFL_Stat_Proj_{rl}.csv", "text/csv")
+                    condensed = condensed.dropna(subset=['Projection']).sort_values('Projection', ascending=False).reset_index(drop=True)
+                    csv2 = condensed.to_csv(index=False).encode()
+                    st.download_button("📥 Download", csv2, f"AFL_Stat_Proj_{rl}.csv", "text/csv", key="stat_csv_dl")
 
     # ══════════════════════════════════════════════════════════
     # STAT LINES PAGE
