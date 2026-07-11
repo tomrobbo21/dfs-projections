@@ -158,7 +158,7 @@ NAME_CORRECTIONS = {
     'Nicholas Madden':'Nick_Madden','Thomas Edwards':'Tom_Edwards',
     'William Hayes':'Will_Hayes1','William Edwards':'Will_Edwards',
     'Hugo Hall-Kahan': 'Hugo_Hall-Kahan','Jack Dalton':'Jack_Dalton1',
-    'William McCabe': 'Will_McCabe',
+    'William McCabe': 'Will_McCabe', 'Matt Hill': 'Matt_Hill',
 }
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
