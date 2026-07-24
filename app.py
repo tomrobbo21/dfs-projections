@@ -1504,14 +1504,19 @@ def main():
 
                 # Manual search for any other player
                 st.markdown("**Add player manually**")
-                boost_player = st.selectbox(
-                    "Search player",
-                    [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
-                    key="boost_select"
-                )
-                if boost_player and boost_player not in st.session_state.manual_role_boosts:
-                    st.session_state.manual_role_boosts[boost_player] = 1.0
-                    st.session_state['boost_select'] = ""
+                col_sel, col_btn = st.columns([4, 1])
+                with col_sel:
+                    boost_player = st.selectbox(
+                        "Search player",
+                        [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
+                        key="boost_select"
+                    )
+                with col_btn:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("＋", key="boost_add_btn"):
+                        if boost_player and boost_player not in st.session_state.manual_role_boosts:
+                            st.session_state.manual_role_boosts[boost_player] = 1.0
+                            st.rerun()
 
                 # Render all sliders after add logic
                 if st.session_state.manual_role_boosts:
