@@ -1504,7 +1504,7 @@ def main():
 
                 # Manual search for any other player
                 st.markdown("**Add player manually**")
-                col_sel, col_btn = st.columns([4, 1])
+                col_sel, col_btn = st.columns([2, 1])
                 with col_sel:
                     boost_player = st.selectbox(
                         "Search player",
