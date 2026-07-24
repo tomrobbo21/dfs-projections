@@ -1511,6 +1511,7 @@ def main():
                 )
                 if boost_player and boost_player not in st.session_state.manual_role_boosts:
                     st.session_state.manual_role_boosts[boost_player] = 1.0
+                    st.rerun()
 
                 # Render all sliders after add logic
                 if st.session_state.manual_role_boosts:
