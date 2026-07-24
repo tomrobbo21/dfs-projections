@@ -963,43 +963,41 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     # Replace fantasy projection with implied_fantasy from stat model
     if not df_stat.empty and 'implied_fantasy' in df_stat.columns:
         impl = df_stat.set_index('player')['implied_fantasy'].to_dict()
-        # Position-specific blend ratios (score_blend = weight given to score model)
+        # Position-specific blend ratios
         BLEND = {'MID':0.40, 'DEF':0.35, 'FWD':0.55, 'RUC':0.20}
 
-        def update_proj(row):
-            p   = row['player']
-            pos = row.get('position', 'MID')
-            score_w = BLEND.get(pos, 0.40)
-            stat_w  = 1.0 - score_w
+        # Vectorised blend — avoids pandas apply() which can segfault with pyarrow-backed DataFrames
+        df_proj['score_w'] = df_proj['position'].map(BLEND).fillna(0.40)
+        df_proj['stat_w']  = 1.0 - df_proj['score_w']
 
-            if p in impl and impl[p] > 0:
-                p_score = row.get('projection_score', row['projection'])
-                p_stat  = impl[p]
-                orig    = p_score if p_score > 0 else 1.0
-                scale   = p_stat / orig
+        # Map implied_fantasy from stat model
+        df_proj['_impl'] = df_proj['player'].map(impl).fillna(0)
+        has_stat = df_proj['_impl'] > 0
 
-                # Store stat-based values
-                row['projection_stat'] = round(p_stat, 1)
-                row['floor_stat']      = round(row['floor'] * scale, 1)
-                row['ceiling_stat']    = round(row['ceiling'] * scale, 1)
-                row['floor_score']     = row.get('floor_score', row['floor'])
-                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
+        # Ensure score columns exist
+        if 'floor_score' not in df_proj.columns:
+            df_proj['floor_score'] = df_proj['floor']
+        if 'ceiling_score' not in df_proj.columns:
+            df_proj['ceiling_score'] = df_proj['ceiling']
 
-                # Blended projection
-                blended = round(stat_w * p_stat + score_w * p_score, 1)
-                row['projection'] = blended
+        p_score = df_proj['projection_score'].where(df_proj['projection_score'] > 0, df_proj['projection'])
+        orig    = p_score.where(p_score > 0, 1.0)
+        scale   = df_proj['_impl'] / orig
 
-                # Properly blended floor and ceiling
-                row['floor']   = round(stat_w * row['floor_stat'] + score_w * row['floor_score'], 1)
-                row['ceiling'] = round(stat_w * row['ceiling_stat'] + score_w * row['ceiling_score'], 1)
-            else:
-                row['projection_stat'] = row['projection']
-                row['floor_stat']      = row['floor']
-                row['ceiling_stat']    = row['ceiling']
-                row['floor_score']     = row.get('floor_score', row['floor'])
-                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
-            return row
-        df_proj = df_proj.apply(update_proj, axis=1)
+        # Stat-based columns
+        df_proj['projection_stat'] = df_proj['_impl'].where(has_stat, df_proj['projection']).round(1)
+        df_proj['floor_stat']      = (df_proj['floor']   * scale).where(has_stat, df_proj['floor']).round(1)
+        df_proj['ceiling_stat']    = (df_proj['ceiling'] * scale).where(has_stat, df_proj['ceiling']).round(1)
+
+        # Blended projection
+        blended  = (df_proj['stat_w'] * df_proj['_impl'] + df_proj['score_w'] * p_score).where(has_stat, df_proj['projection'])
+        df_proj['projection'] = blended.round(1)
+        df_proj['floor']   = (df_proj['stat_w'] * df_proj['floor_stat']   + df_proj['score_w'] * df_proj['floor_score']).where(has_stat, df_proj['floor']).round(1)
+        df_proj['ceiling'] = (df_proj['stat_w'] * df_proj['ceiling_stat'] + df_proj['score_w'] * df_proj['ceiling_score']).where(has_stat, df_proj['ceiling']).round(1)
+
+        # Clean up temp columns
+        df_proj.drop(columns=['score_w', 'stat_w', '_impl'], inplace=True)
+
         df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
         df_proj.index += 1
 
@@ -1512,8 +1510,8 @@ def main():
                         key="boost_select"
                     )
                 with col_btn:
-                    st.markdown("<br>", unsafe_allow_html=True)
-                    if st.button("＋", key="boost_add_btn"):
+                    st.write("")
+                    if st.button("+ Add", key="boost_add_btn"):
                         if boost_player and boost_player not in st.session_state.manual_role_boosts:
                             st.session_state.manual_role_boosts[boost_player] = 1.0
                             st.rerun()
