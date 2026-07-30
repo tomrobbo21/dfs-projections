@@ -14,8 +14,13 @@ from supabase import create_client, Client
 # ── SUPABASE CLIENT ───────────────────────────────────────────
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    try:
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+    except Exception:
+        import os
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
     return create_client(url, key)
 
 st.set_page_config(page_title="AFL Fantasy DFS", page_icon="🏉", layout="wide")
@@ -963,41 +968,43 @@ def run_projections(df_stats, ds_players, fixtures, weather_map,
     # Replace fantasy projection with implied_fantasy from stat model
     if not df_stat.empty and 'implied_fantasy' in df_stat.columns:
         impl = df_stat.set_index('player')['implied_fantasy'].to_dict()
-        # Position-specific blend ratios
+        # Position-specific blend ratios (score_blend = weight given to score model)
         BLEND = {'MID':0.40, 'DEF':0.35, 'FWD':0.55, 'RUC':0.20}
 
-        # Vectorised blend — avoids pandas apply() which can segfault with pyarrow-backed DataFrames
-        df_proj['score_w'] = df_proj['position'].map(BLEND).fillna(0.40)
-        df_proj['stat_w']  = 1.0 - df_proj['score_w']
+        def update_proj(row):
+            p   = row['player']
+            pos = row.get('position', 'MID')
+            score_w = BLEND.get(pos, 0.40)
+            stat_w  = 1.0 - score_w
 
-        # Map implied_fantasy from stat model
-        df_proj['_impl'] = df_proj['player'].map(impl).fillna(0)
-        has_stat = df_proj['_impl'] > 0
+            if p in impl and impl[p] > 0:
+                p_score = row.get('projection_score', row['projection'])
+                p_stat  = impl[p]
+                orig    = p_score if p_score > 0 else 1.0
+                scale   = p_stat / orig
 
-        # Ensure score columns exist
-        if 'floor_score' not in df_proj.columns:
-            df_proj['floor_score'] = df_proj['floor']
-        if 'ceiling_score' not in df_proj.columns:
-            df_proj['ceiling_score'] = df_proj['ceiling']
+                # Store stat-based values
+                row['projection_stat'] = round(p_stat, 1)
+                row['floor_stat']      = round(row['floor'] * scale, 1)
+                row['ceiling_stat']    = round(row['ceiling'] * scale, 1)
+                row['floor_score']     = row.get('floor_score', row['floor'])
+                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
 
-        p_score = df_proj['projection_score'].where(df_proj['projection_score'] > 0, df_proj['projection'])
-        orig    = p_score.where(p_score > 0, 1.0)
-        scale   = df_proj['_impl'] / orig
+                # Blended projection
+                blended = round(stat_w * p_stat + score_w * p_score, 1)
+                row['projection'] = blended
 
-        # Stat-based columns
-        df_proj['projection_stat'] = df_proj['_impl'].where(has_stat, df_proj['projection']).round(1)
-        df_proj['floor_stat']      = (df_proj['floor']   * scale).where(has_stat, df_proj['floor']).round(1)
-        df_proj['ceiling_stat']    = (df_proj['ceiling'] * scale).where(has_stat, df_proj['ceiling']).round(1)
-
-        # Blended projection
-        blended  = (df_proj['stat_w'] * df_proj['_impl'] + df_proj['score_w'] * p_score).where(has_stat, df_proj['projection'])
-        df_proj['projection'] = blended.round(1)
-        df_proj['floor']   = (df_proj['stat_w'] * df_proj['floor_stat']   + df_proj['score_w'] * df_proj['floor_score']).where(has_stat, df_proj['floor']).round(1)
-        df_proj['ceiling'] = (df_proj['stat_w'] * df_proj['ceiling_stat'] + df_proj['score_w'] * df_proj['ceiling_score']).where(has_stat, df_proj['ceiling']).round(1)
-
-        # Clean up temp columns
-        df_proj.drop(columns=['score_w', 'stat_w', '_impl'], inplace=True)
-
+                # Properly blended floor and ceiling
+                row['floor']   = round(stat_w * row['floor_stat'] + score_w * row['floor_score'], 1)
+                row['ceiling'] = round(stat_w * row['ceiling_stat'] + score_w * row['ceiling_score'], 1)
+            else:
+                row['projection_stat'] = row['projection']
+                row['floor_stat']      = row['floor']
+                row['ceiling_stat']    = row['ceiling']
+                row['floor_score']     = row.get('floor_score', row['floor'])
+                row['ceiling_score']   = row.get('ceiling_score', row['ceiling'])
+            return row
+        df_proj = df_proj.apply(update_proj, axis=1)
         df_proj = df_proj.sort_values('projection', ascending=False).reset_index(drop=True)
         df_proj.index += 1
 
@@ -1502,19 +1509,13 @@ def main():
 
                 # Manual search for any other player
                 st.markdown("**Add player manually**")
-                col_sel, col_btn = st.columns([2, 1])
-                with col_sel:
-                    boost_player = st.selectbox(
-                        "Search player",
-                        [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
-                        key="boost_select"
-                    )
-                with col_btn:
-                    st.write("")
-                    if st.button("+ Add", key="boost_add_btn"):
-                        if boost_player and boost_player not in st.session_state.manual_role_boosts:
-                            st.session_state.manual_role_boosts[boost_player] = 1.0
-                            st.rerun()
+                boost_player = st.selectbox(
+                    "Search player",
+                    [""] + sorted(st.session_state.ds_players['ds_name'].tolist()),
+                    key="boost_select"
+                )
+                if boost_player and boost_player not in st.session_state.manual_role_boosts:
+                    st.session_state.manual_role_boosts[boost_player] = 1.0
 
                 # Render all sliders after add logic
                 if st.session_state.manual_role_boosts:
@@ -2452,14 +2453,7 @@ def main():
                         records, status = scrape_with_fallbacks(
                             single_player, team, pos, [single_season], venue_lookup, is_home_lookup
                         )
-                        round_recs_raw = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
-                    seen_keys = set()
-                    round_recs = []
-                    for r in round_recs_raw:
-                        key = (r['name'], r['season'], str(r['round']), r['opponent'])
-                        if key not in seen_keys:
-                            seen_keys.add(key)
-                            round_recs.append(r)
+                        round_recs = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
 
                     if round_recs:
                         save_stats_to_supabase(round_recs)
@@ -2538,17 +2532,10 @@ def main():
                 records, status = scrape_with_fallbacks(
                     name, team, pos, [season], venue_lookup, is_home_lookup
                 )
-                round_recs_raw = [
+                round_recs = [
                     r for r in records
                     if str(r['round'])==str(round_num) and r['season']==season
                 ]
-                seen_keys = set()
-                round_recs = []
-                for r in round_recs_raw:
-                    key = (r['name'], r['season'], str(r['round']), r['opponent'])
-                    if key not in seen_keys:
-                        seen_keys.add(key)
-                        round_recs.append(r)
                 with lock:
                     done[0] += 1
                     if round_recs:
@@ -2571,15 +2558,7 @@ def main():
                         log_area.code('\n'.join(log_lines[-50:]))
 
             if new_records:
-                # Deduplicate by unique key before upsert to prevent ON CONFLICT errors from parallel scraping
-                seen = set()
-                deduped = []
-                for r in new_records:
-                    key = (r['name'], r['season'], str(r['round']), r['opponent'])
-                    if key not in seen:
-                        seen.add(key)
-                        deduped.append(r)
-                save_stats_to_supabase(deduped)
+                save_stats_to_supabase(new_records)
                 st.success(f"✅ Added {len(new_records)} records for Round {round_num} {season}")
             else:
                 st.warning("No new records found.")
