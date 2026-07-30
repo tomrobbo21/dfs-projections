@@ -2452,7 +2452,14 @@ def main():
                         records, status = scrape_with_fallbacks(
                             single_player, team, pos, [single_season], venue_lookup, is_home_lookup
                         )
-                        round_recs = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
+                        round_recs_raw = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
+                    seen_keys = set()
+                    round_recs = []
+                    for r in round_recs_raw:
+                        key = (r['name'], r['season'], str(r['round']), r['opponent'])
+                        if key not in seen_keys:
+                            seen_keys.add(key)
+                            round_recs.append(r)
 
                     if round_recs:
                         save_stats_to_supabase(round_recs)
@@ -2531,10 +2538,17 @@ def main():
                 records, status = scrape_with_fallbacks(
                     name, team, pos, [season], venue_lookup, is_home_lookup
                 )
-                round_recs = [
+                round_recs_raw = [
                     r for r in records
                     if str(r['round'])==str(round_num) and r['season']==season
                 ]
+                seen_keys = set()
+                round_recs = []
+                for r in round_recs_raw:
+                    key = (r['name'], r['season'], str(r['round']), r['opponent'])
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        round_recs.append(r)
                 with lock:
                     done[0] += 1
                     if round_recs:
