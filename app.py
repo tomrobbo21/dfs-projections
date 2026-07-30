@@ -2557,7 +2557,15 @@ def main():
                         log_area.code('\n'.join(log_lines[-50:]))
 
             if new_records:
-                save_stats_to_supabase(new_records)
+                # Deduplicate by unique key before upsert to prevent ON CONFLICT errors from parallel scraping
+                seen = set()
+                deduped = []
+                for r in new_records:
+                    key = (r['name'], r['season'], str(r['round']), r['opponent'])
+                    if key not in seen:
+                        seen.add(key)
+                        deduped.append(r)
+                save_stats_to_supabase(deduped)
                 st.success(f"✅ Added {len(new_records)} records for Round {round_num} {season}")
             else:
                 st.warning("No new records found.")
