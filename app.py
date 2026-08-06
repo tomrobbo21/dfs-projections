@@ -1238,7 +1238,7 @@ def main():
         # ── 2. DRAFTSTARS CSV ─────────────────────────────────
         st.subheader("2. Upload Draftstars CSV")
         ds_file = st.file_uploader("Draftstars CSV", type="csv", label_visibility="collapsed")
-        if ds_file:
+        if ds_file and ds_file.name != st.session_state.get('ds_file_name'):
             try:
                 players, out_players = parse_draftstars_csv(ds_file.read())
                 st.session_state.ds_players         = players
