@@ -31,6 +31,11 @@ STAT_COLS  = list(SCORING.keys())
 POSITIONS  = ['MID', 'DEF', 'FWD', 'RUC']
 SEASON_WEIGHTS = {2026: 1.00, 2025: 0.70, 2024: 0.40, 2023: 0.20}
 
+# AFL Tables uses text labels for finals rounds. WC is the Wildcard round.
+FINALS_ORDER = {'WC': 99, 'EF': 100, 'QF': 101, 'SF': 102, 'PF': 103, 'GF': 104}
+FINALS_LABELS = set(FINALS_ORDER)
+SCRAPE_ROUND_OPTIONS = list(range(1, 31)) + list(FINALS_ORDER)
+
 # Position-specific model parameters
 POS_PARAMS = {
     'MID': {'form_window':5, 'form_cap':0.20, 'trend_cap':0.10, 'venue_cap':0.07, 'ha_cap':0.15, 'wins_lo':10, 'wins_hi':90, 'score_blend':0.40},
@@ -180,6 +185,22 @@ FACTOR_LABELS = ['Form (last 5)', 'Trend (20-game)', 'Opponent difficulty',
 def winsorise(vals, lower=10, upper=90):
     if len(vals) < 4: return vals
     return np.clip(vals, np.percentile(vals, lower), np.percentile(vals, upper))
+
+def normalise_round(value):
+    """Return regular rounds as ints and AFL Tables finals rounds as labels."""
+    text = str(value).strip().upper()
+    if text in FINALS_LABELS:
+        return text
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return text
+
+def round_sort_key(value):
+    value = normalise_round(value)
+    if isinstance(value, int):
+        return value
+    return FINALS_ORDER.get(value, 999)
 
 def get_pos_params(position):
     """Get position-specific model parameters."""
@@ -424,7 +445,6 @@ def parse_draftstars_csv(file_bytes):
 # ── SCRAPING ──────────────────────────────────────────────────
 
 def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, is_home_lookup=None):
-    FINALS_LABELS = {'EF','QF','SF','PF','GF'}
     url = build_afltables_url(player_name)
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
@@ -449,11 +469,9 @@ def scrape_player_afltables(player_name, team, position, seasons, venue_lookup, 
                 opp_raw  = cells[1].strip() if len(cells) > 1 else ''
                 opponent = DS_TEAM_MAP.get(opp_raw, opp_raw)
                 rd_raw   = cells[2].strip() if len(cells) > 2 else ''
-                if rd_raw in FINALS_LABELS:
-                    round_num = rd_raw
-                else:
-                    try: round_num = int(re.search(r'\d+', rd_raw).group())
-                    except: continue
+                round_num = normalise_round(rd_raw)
+                if not isinstance(round_num, int) and round_num not in FINALS_LABELS:
+                    continue
                 game_date = None
                 for c in cells:
                     dm = re.search(r'(\d{1,2}-[A-Za-z]+-\d{4})', c)
@@ -548,12 +566,8 @@ class AFLFantasyProjector:
         self._build_venue_ratings()
 
     def _preprocess(self):
-        FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
         def rsort(r):
-            r = str(r).strip()
-            if r in FINALS_ORDER: return FINALS_ORDER[r]
-            try: return int(r)
-            except: return 999
+            return round_sort_key(r)
         self.df['_rs'] = self.df['round'].map(rsort)
         self.df = self.df.sort_values(['name','season','_rs']).drop(columns='_rs').reset_index(drop=True)
         for col in STAT_COLS + ['fantasy_score','tog_pct']:
@@ -589,12 +603,8 @@ class AFLFantasyProjector:
                        manual_base_scores=None):
         fw = factor_weights or {}
         manual_base_scores = manual_base_scores or {}
-        FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
         def rsort(r):
-            r=str(r).strip()
-            if r in FINALS_ORDER: return FINALS_ORDER[r]
-            try: return int(r)
-            except: return 999
+            return round_sort_key(r)
 
         pd_ = self.df[self.df['name']==player_name].copy()
         pd_['_rs'] = pd_['round'].map(rsort)
@@ -719,7 +729,7 @@ class AFLFantasyProjector:
                      tog_override, factor_weights, opp_stat_ratings, role_boost=1.0):
         fw  = factor_weights or {}
         pd_ = self.df[self.df['name']==player_name].copy()
-        pd_['_rs'] = pd_['round'].apply(lambda r: int(r) if str(r).isdigit() else 999)
+        pd_['_rs'] = pd_['round'].map(round_sort_key)
         pd_ = pd_.sort_values(['season','_rs']).drop(columns='_rs')
         if not len(pd_): return None
         pd_ = pd_[pd_['tog_pct']>=0.45].copy()
@@ -1012,12 +1022,8 @@ def calc_with_without(df_stats, missing_player, missing_team, named_players_df):
     in rounds where missing_player was out vs rounds they played together.
     Uses last 2 seasons only. Returns a sorted DataFrame.
     """
-    FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
     def rsort(r):
-        r = str(r).strip()
-        if r in FINALS_ORDER: return FINALS_ORDER[r]
-        try: return int(r)
-        except: return 999
+        return round_sort_key(r)
 
     recent_seasons = sorted(df_stats['season'].unique())[-2:]
     recent = df_stats[df_stats['season'].isin(recent_seasons)].copy()
@@ -1210,8 +1216,7 @@ def main():
             sel_season   = st.selectbox("Season", seasons, index=season_index, key="sel_season")
 
             df_season = df_fixtures[df_fixtures['file_year'] == sel_season]
-            rounds    = sorted(df_season['Round Number'].unique(),
-                               key=lambda r: int(r) if str(r).isdigit() else 999)
+            rounds    = sorted(df_season['Round Number'].unique(), key=round_sort_key)
             saved_round = st.session_state.get('saved_round')
             round_index = rounds.index(saved_round) if saved_round in rounds else 0
             sel_round   = st.selectbox("Round", rounds, index=round_index, key="sel_round")
@@ -1749,12 +1754,8 @@ def main():
             st.markdown("---")
             st.markdown("**Last 10 games**")
             if st.session_state.df_stats is not None:
-                FINALS_ORDER = {'EF':100,'QF':101,'SF':102,'PF':103,'GF':104}
                 def rsort(x):
-                    x = str(x).strip()
-                    if x in FINALS_ORDER: return FINALS_ORDER[x]
-                    try: return int(x)
-                    except: return 999
+                    return round_sort_key(x)
                 hist = st.session_state.df_stats[st.session_state.df_stats['name']==selected].copy()
                 hist['_rs'] = hist['round'].map(rsort)
                 hist = hist.sort_values(['season','_rs']).drop(columns='_rs')
@@ -2403,14 +2404,20 @@ def main():
         with col1:
             season = st.selectbox("Season", [2026,2025,2024,2023])
         with col2:
-            round_num = st.number_input("Round number (AFL Tables)", 1, 30, 1)
+            round_num = st.selectbox(
+                "Round (AFL Tables)", SCRAPE_ROUND_OPTIONS,
+                help="Finals rounds use AFL Tables labels: WC, EF, QF, SF, PF and GF.",
+            )
 
         # ── SINGLE PLAYER SCRAPE ─────────────────────────────
         st.markdown("**Scrape single player**")
         roster_names = sorted(df_roster['ds_name'].tolist()) if 'ds_name' in df_roster.columns else sorted(df_roster['name'].tolist())
         single_player = st.selectbox("Select player", [""] + roster_names, key="single_player_select")
         single_season = st.selectbox("Season ", [2026, 2025, 2024, 2023], key="single_season")
-        single_round  = st.number_input("Round ", 1, 30, 1, key="single_round")
+        single_round  = st.selectbox(
+            "Round ", SCRAPE_ROUND_OPTIONS, key="single_round",
+            help="Finals rounds use AFL Tables labels: WC, EF, QF, SF, PF and GF.",
+        )
 
         if st.button("🔍 Scrape this player"):
             if not single_player:
@@ -2432,7 +2439,7 @@ def main():
                                 home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
                                 away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                                 venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
-                                rnd   = str(row.get('Round Number',''))
+                                rnd   = str(normalise_round(row.get('Round Number','')))
                                 yr    = int(row.get('file_year', 0))
                                 date_str = row.get('Date','')
                                 try:
@@ -2452,7 +2459,11 @@ def main():
                         records, status = scrape_with_fallbacks(
                             single_player, team, pos, [single_season], venue_lookup, is_home_lookup
                         )
-                        round_recs_raw = [r for r in records if str(r['round']) == str(single_round) and r['season'] == single_season]
+                        round_recs_raw = [
+                            r for r in records
+                            if normalise_round(r['round']) == normalise_round(single_round)
+                            and r['season'] == single_season
+                        ]
                     seen_keys = set()
                     round_recs = []
                     for r in round_recs_raw:
@@ -2485,7 +2496,7 @@ def main():
                         home  = DS_TEAM_MAP.get(row.get('Home Team',''), row.get('Home Team',''))
                         away  = DS_TEAM_MAP.get(row.get('Away Team',''), row.get('Away Team',''))
                         venue = FIXTURE_VENUE_MAP.get(row.get('Location',''), row.get('Location',''))
-                        rnd   = str(row.get('Round Number',''))
+                        rnd   = str(normalise_round(row.get('Round Number','')))
                         yr    = int(row.get('file_year', 0))
                         date_str = row.get('Date','')
                         try:
@@ -2507,7 +2518,7 @@ def main():
             existing_keys = set()
             if not df_stats.empty:
                 for _, row in df_stats.iterrows():
-                    existing_keys.add((row['name'], int(row['season']), str(row['round'])))
+                    existing_keys.add((row['name'], int(row['season']), normalise_round(row['round'])))
 
             new_records = []
             players     = df_roster.to_dict('records')
@@ -2517,7 +2528,7 @@ def main():
             for i, player in enumerate(players):
                 name = player.get('ds_name') or player.get('name') or player.get('Name','')
                 if not name: continue
-                key = (name, season, str(round_num))
+                key = (name, season, normalise_round(round_num))
                 if key in existing_keys:
                     log_lines.append(f"[skip] {name} — already have Rd {round_num}")
                 else:
@@ -2540,7 +2551,7 @@ def main():
                 )
                 round_recs_raw = [
                     r for r in records
-                    if str(r['round'])==str(round_num) and r['season']==season
+                    if normalise_round(r['round']) == normalise_round(round_num) and r['season']==season
                 ]
                 seen_keys = set()
                 round_recs = []
