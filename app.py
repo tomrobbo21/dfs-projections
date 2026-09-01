@@ -2488,6 +2488,9 @@ def main():
 
                     if round_recs:
                         save_stats_to_supabase(round_recs)
+                        # Keep the active session in sync with the newly saved round so
+                        # Stat Lines and subsequent projections include it immediately.
+                        st.session_state.df_stats = load_stats()
                         fs = round_recs[0]['fantasy_score']
                         venue = round_recs[0]['venue']
                         st.success(f"✅ {single_player} — Round {single_round} {single_season}: score={fs}, venue={venue}")
@@ -2605,6 +2608,9 @@ def main():
                         seen.add(key)
                         deduped.append(r)
                 save_stats_to_supabase(deduped)
+                # save_stats_to_supabase clears the shared cache; reload the active
+                # session snapshot as well so finals data is not stale until restart.
+                st.session_state.df_stats = load_stats()
                 st.success(f"✅ Added {len(new_records)} records for Round {round_num} {season}")
             else:
                 st.warning("No new records found.")
