@@ -14,8 +14,22 @@ from supabase import create_client, Client
 # ── SUPABASE CLIENT ───────────────────────────────────────────
 @st.cache_resource
 def get_supabase() -> Client:
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
+    # Railway exposes service variables through the environment, while local
+    # Streamlit deployments commonly use .streamlit/secrets.toml.
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        try:
+            url = url or st.secrets.get("SUPABASE_URL")
+            key = key or st.secrets.get("SUPABASE_KEY")
+        except Exception:
+            # Accessing st.secrets raises when no secrets.toml exists.
+            pass
+    if not url or not key:
+        raise RuntimeError(
+            "Supabase credentials are missing. Set SUPABASE_URL and "
+            "SUPABASE_KEY as environment variables or Streamlit secrets."
+        )
     return create_client(url, key)
 
 st.set_page_config(page_title="AFL Fantasy DFS", page_icon="🏉", layout="wide")
