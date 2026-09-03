@@ -49,6 +49,7 @@ SEASON_WEIGHTS = {2026: 1.00, 2025: 0.70, 2024: 0.40, 2023: 0.20}
 FINALS_ORDER = {'WC': 99, 'EF': 100, 'QF': 101, 'SF': 102, 'PF': 103, 'GF': 104}
 FINALS_LABELS = set(FINALS_ORDER)
 SCRAPE_ROUND_OPTIONS = list(range(1, 31)) + list(FINALS_ORDER)
+ROUND_ALIASES = {'WF': 'WC'}  # AFL Tables calls the Wildcard Final "WF".
 
 # Position-specific model parameters
 POS_PARAMS = {
@@ -176,7 +177,7 @@ NAME_CORRECTIONS = {
     'Jack Carroll':'Jack_Carroll1','Joshua Draper':'Josh_Draper',
     'Nicholas Madden':'Nick_Madden','Thomas Edwards':'Tom_Edwards',
     'William Hayes':'Will_Hayes1','William Edwards':'Will_Edwards',
-    'Hugo Hall-Kahan': 'Hugo_Hall-Kahan',
+    'Hugo Hall-Kahan':'Hugo_Hall-Kahan','Billy Wilson':'Billy_Wilson2',
 }
 
 HEADERS = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -203,6 +204,7 @@ def winsorise(vals, lower=10, upper=90):
 def normalise_round(value):
     """Return regular rounds as ints and AFL Tables finals rounds as labels."""
     text = str(value).strip().upper()
+    text = ROUND_ALIASES.get(text, text)
     if text in FINALS_LABELS:
         return text
     try:
